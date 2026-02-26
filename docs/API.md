@@ -10,15 +10,17 @@
 
 #### `start_tunnel`
 
-启动一个 Cloudflare Tunnel。
+启动指定的 Cloudflare Tunnel。
 
 ```typescript
-invoke('start_tunnel', { token: string }): Promise<Result<string, string>>
+invoke('start_tunnel', { tunnelId: string, name: string, token: string }): Promise<Result<string, string>>
 ```
 
 **参数：**
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
+| tunnelId | string | 是 | Tunnel 配置 ID |
+| name | string | 是 | Tunnel 展示名称 |
 | token | string | 是 | Cloudflare Tunnel Token |
 
 **返回值：**
@@ -39,11 +41,16 @@ invoke('start_tunnel', { token: string }): Promise<Result<string, string>>
 
 #### `stop_tunnel`
 
-停止当前运行的 Tunnel。
+停止指定 Tunnel。
 
 ```typescript
-invoke('stop_tunnel'): Promise<Result<string, string>>
+invoke('stop_tunnel', { tunnelId: string }): Promise<Result<string, string>>
 ```
+
+**参数：**
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| tunnelId | string | 是 | Tunnel 配置 ID |
 
 **返回值：**
 ```json
@@ -73,9 +80,23 @@ invoke('get_tunnel_status'): Promise<Result<TunnelStatus, string>>
 ```typescript
 type TunnelStatus = {
   running: boolean;
-  tunnel_id?: string;
-  started_at?: string;  // ISO 8601
+  running_count: number;
+  tunnels: Array<{
+    tunnel_id: string;
+    name: string;
+    started_at: string;  // ISO 8601
+  }>;
 };
+```
+
+---
+
+#### `stop_all_tunnels`
+
+停止所有运行中的 Tunnel。
+
+```typescript
+invoke('stop_all_tunnels'): Promise<Result<string, string>>
 ```
 
 ---
@@ -149,7 +170,7 @@ interface LogEntry {
   timestamp: string;      // ISO 8601
   level: 'info' | 'warn' | 'error' | 'debug';
   message: string;
-  source: 'cloudflared' | 'app';
+  source: string;  // app 或 cloudflared:<tunnel-name>
 }
 ```
 
@@ -183,6 +204,8 @@ type TunnelStatus = {
   status: 'starting' | 'running' | 'stopping' | 'stopped' | 'error';
   message?: string;
   tunnel_id?: string;
+  name?: string;
+  started_at?: string;
 };
 ```
 
@@ -244,7 +267,7 @@ interface LogEntry {
   timestamp: string;       // ISO 8601
   level: LogLevel;
   message: string;
-  source: 'cloudflared' | 'app';
+  source: string;          // app 或 cloudflared:<tunnel-name>
 }
 
 // 应用设置
@@ -302,9 +325,9 @@ const ErrorCodes = {
 import { invoke } from '@tauri-apps/api/tauri';
 import { listen } from '@tauri-apps/api/event';
 
-async function startTunnel(token: string) {
+async function startTunnel(tunnelId: string, name: string, token: string) {
   try {
-    await invoke('start_tunnel', { token });
+    await invoke('start_tunnel', { tunnelId, name, token });
     
     // 监听日志
     const unlisten = await listen('tunnel-log', (event) => {
