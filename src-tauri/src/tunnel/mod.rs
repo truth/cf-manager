@@ -1,11 +1,14 @@
 use crate::commands::tunnel::{RunningTunnelStatus, TunnelStatus};
 use crate::commands::types::LogEntry;
+use crate::tunnel::download::CloudflaredDownloader;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc as StdArc;
 use tauri::{AppHandle, Emitter};
 use thiserror::Error;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
+
+pub mod download;
 
 const MAX_LOG_HISTORY: usize = 1_000;
 
@@ -280,28 +283,89 @@ impl TunnelManager {
         let (mut child, startup_command) = match selected {
             Some(value) => value,
             None => {
-                let details = if spawn_errors.is_empty() {
-                    "No startup command candidates available.".to_string()
-                } else {
-                    spawn_errors.join(" | ")
-                };
-                let friendly = format!(
-                    "Unable to launch cloudflared. Install cloudflared or configure CLOUDFLARED_PATH. Details: {}",
-                    details
-                );
+                emit_and_store_log(
+                    &app,
+                    &logs,
+                    build_log("info", "cloudflared not found, attempting to download...", "app"),
+                )
+                .await;
 
-                emit_and_store_log(&app, &logs, build_log("error", friendly.clone(), "app")).await;
                 let _ = app.emit(
                     "tunnel-status",
                     serde_json::json!({
-                        "status": "error",
-                        "message": friendly
+                        "status": "downloading",
+                        "tunnel_id": tunnel_id,
+                        "name": tunnel_name,
+                        "message": "cloudflared not found. Downloading..."
                     }),
                 );
 
-                return Err(TunnelError::StartFailed(
-                    "Unable to launch cloudflared. Install cloudflared or configure CLOUDFLARED_PATH.".to_string(),
-                ));
+                let download_result = tokio::task::spawn_blocking(|| {
+                    CloudflaredDownloader::download_to_common_locations()
+                })
+                .await
+                .unwrap_or(None);
+
+                if let Some(downloaded_path) = download_result {
+                    let path_str = downloaded_path.to_string_lossy().to_string();
+                    emit_and_store_log(
+                        &app,
+                        &logs,
+                        build_log("info", format!("Successfully downloaded to {:?}", path_str), "app"),
+                    )
+                    .await;
+
+                    let candidate = StartCommandCandidate::new(&path_str, trimmed_token);
+
+                    let mut std_command = std::process::Command::new(&candidate.program);
+                    std_command
+                        .args(candidate.args.iter().map(String::as_str))
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped());
+
+                    #[cfg(windows)]
+                    {
+                        use std::os::windows::process::CommandExt;
+                        std_command.creation_flags(CREATE_NO_WINDOW);
+                    }
+
+                    let mut command = tokio::process::Command::from(std_command);
+                    match command.spawn() {
+                        Ok(new_child) => (new_child, candidate.display),
+                        Err(error) => {
+                            let friendly = format!("Failed to spawn downloaded cloudflared: {}", error);
+                            emit_and_store_log(&app, &logs, build_log("error", friendly.clone(), "app")).await;
+                            let _ = app.emit(
+                                "tunnel-status",
+                                serde_json::json!({ "status": "error", "message": friendly }),
+                            );
+                            return Err(TunnelError::StartFailed(friendly));
+                        }
+                    }
+                } else {
+                    let details = if spawn_errors.is_empty() {
+                        "No startup command candidates available.".to_string()
+                    } else {
+                        spawn_errors.join(" | ")
+                    };
+                    let friendly = format!(
+                        "Unable to launch cloudflared. Install cloudflared or configure CLOUDFLARED_PATH. Details: {}",
+                        details
+                    );
+
+                    emit_and_store_log(&app, &logs, build_log("error", friendly.clone(), "app")).await;
+                    let _ = app.emit(
+                        "tunnel-status",
+                        serde_json::json!({
+                            "status": "error",
+                            "message": friendly
+                        }),
+                    );
+
+                    return Err(TunnelError::StartFailed(
+                        "Unable to launch cloudflared. Install cloudflared or configure CLOUDFLARED_PATH.".to_string(),
+                    ));
+                }
             }
         };
 
