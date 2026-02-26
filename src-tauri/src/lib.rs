@@ -77,7 +77,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 pub fn run() {
     setup_logging();
 
-    info!("Starting Cloudflare Tunnel Manager v1.0.0");
+    info!("Starting Cloudflare Tunnel Manager v1.1.0");
 
     let app_state = AppState::new();
 
