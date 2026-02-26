@@ -97,10 +97,11 @@ function createEmptyForm(): TunnelFormState {
 
 export default function TunnelsPage() {
   const { t } = useI18n();
-  const { status, loading, error, refresh, start, stop } = useTunnelStatus();
+  const { status, loading, error, refresh, start, startMany, stop, stopAll } = useTunnelStatus();
   const [configs, setConfigs] = useState<TunnelConfig[]>([]);
   const [isFetchingConfigs, setIsFetchingConfigs] = useState(false);
   const [selectedTunnelId, setSelectedTunnelId] = useState<string | null>(null);
+  const [checkedTunnelIds, setCheckedTunnelIds] = useState<string[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [dialogMode, setDialogMode] = useState<DialogMode>('create');
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -128,6 +129,7 @@ export default function TunnelsPage() {
   useEffect(() => {
     if (configs.length === 0) {
       setSelectedTunnelId(null);
+      setCheckedTunnelIds([]);
       return;
     }
 
@@ -137,6 +139,8 @@ export default function TunnelsPage() {
       }
       return configs[0].id;
     });
+
+    setCheckedTunnelIds((prev) => prev.filter((id) => configs.some((config) => config.id === id)));
   }, [configs]);
 
   const selectedConfig = useMemo(() => {
@@ -145,6 +149,20 @@ export default function TunnelsPage() {
     }
     return configs.find((config) => config.id === selectedTunnelId) ?? null;
   }, [configs, selectedTunnelId]);
+
+  const checkedConfigs = useMemo(
+    () => configs.filter((config) => checkedTunnelIds.includes(config.id)),
+    [checkedTunnelIds, configs],
+  );
+
+  const runningTunnelIds = useMemo(() => new Set(status.tunnels.map((item) => item.tunnel_id)), [status.tunnels]);
+
+  const selectedRuntime = useMemo(() => {
+    if (!selectedConfig) {
+      return undefined;
+    }
+    return status.tunnels.find((item) => item.tunnel_id === selectedConfig.id);
+  }, [selectedConfig, status.tunnels]);
 
   const resetDialog = useCallback(() => {
     setDialogOpen(false);
@@ -215,6 +233,7 @@ export default function TunnelsPage() {
       try {
         await deleteConfig(id);
         setConfigs((prev) => prev.filter((config) => config.id !== id));
+        setCheckedTunnelIds((prev) => prev.filter((value) => value !== id));
         setPageSuccess(t('tunnels.alert.deleted'));
         setPageError(null);
       } catch (deleteError) {
@@ -231,7 +250,7 @@ export default function TunnelsPage() {
     }
 
     try {
-      await start(selectedConfig.token);
+      await start(selectedConfig.id, selectedConfig.name, selectedConfig.token);
       setPageSuccess(t('tunnels.alert.started', { name: selectedConfig.name }));
       setPageError(null);
     } catch (startError) {
@@ -241,14 +260,63 @@ export default function TunnelsPage() {
   }, [selectedConfig, start, t]);
 
   const handleStop = useCallback(async () => {
+    if (!selectedConfig) {
+      setPageError(t('tunnels.alert.selectBeforeStart'));
+      return;
+    }
+
     try {
-      await stop();
-      setPageSuccess(t('tunnels.alert.stopped'));
+      await stop(selectedConfig.id);
+      setPageSuccess(t('tunnels.alert.stopped', { name: selectedConfig.name }));
       setPageError(null);
     } catch (stopError) {
       setPageError(t('tunnels.alert.stopFailed', { details: String(stopError) }));
     }
-  }, [stop, t]);
+  }, [selectedConfig, stop, t]);
+
+  const handleStartChecked = useCallback(async () => {
+    if (checkedConfigs.length === 0) {
+      setPageError(t('tunnels.alert.selectBeforeStart'));
+      return;
+    }
+
+    try {
+      await startMany(checkedConfigs.map((config) => ({ id: config.id, name: config.name, token: config.token })));
+      setPageSuccess(t('tunnels.alert.batchStarted', { count: checkedConfigs.length }));
+      setPageError(null);
+    } catch (startError) {
+      const friendly = toFriendlyStartError(String(startError), t);
+      setPageError(t('tunnels.alert.startFailed', { details: friendly }));
+    }
+  }, [checkedConfigs, startMany, t]);
+
+  const handleStopChecked = useCallback(async () => {
+    const runningChecked = checkedConfigs.filter((config) => runningTunnelIds.has(config.id));
+    if (runningChecked.length === 0) {
+      setPageError(t('tunnels.alert.noneRunningSelected'));
+      return;
+    }
+
+    try {
+      for (const config of runningChecked) {
+        await stop(config.id);
+      }
+      setPageSuccess(t('tunnels.alert.batchStopped', { count: runningChecked.length }));
+      setPageError(null);
+    } catch (stopError) {
+      setPageError(t('tunnels.alert.stopFailed', { details: String(stopError) }));
+    }
+  }, [checkedConfigs, runningTunnelIds, stop, t]);
+
+  const handleStopAll = useCallback(async () => {
+    try {
+      await stopAll();
+      setPageSuccess(t('tunnels.alert.batchStopped', { count: status.running_count }));
+      setPageError(null);
+    } catch (stopError) {
+      setPageError(t('tunnels.alert.stopFailed', { details: String(stopError) }));
+    }
+  }, [status.running_count, stopAll, t]);
 
   const dialogTitle = dialogMode === 'edit' ? t('tunnels.dialog.editTitle') : t('tunnels.dialog.createTitle');
   const dialogAction = dialogMode === 'edit' ? t('tunnels.dialog.update') : t('tunnels.dialog.save');
@@ -268,13 +336,18 @@ export default function TunnelsPage() {
 
         <div className="info-row">
           <StatusBadge tone={status.running ? 'success' : 'neutral'}>
-            {status.running ? t('status.running') : t('status.stopped')}
+            {status.running
+              ? t('status.runningCount', { count: status.running_count })
+              : t('status.stopped')}
           </StatusBadge>
           <StatusBadge tone={selectedConfig ? 'info' : 'neutral'}>
             {selectedConfig ? t('status.selected', { name: selectedConfig.name }) : t('status.noneSelected')}
           </StatusBadge>
-          {status.started_at ? (
-            <span className="text-muted">{t('tunnels.startedAt', { time: formatDate(status.started_at) })}</span>
+          <StatusBadge tone={checkedConfigs.length > 0 ? 'info' : 'neutral'}>
+            {t('tunnels.checkedCount', { count: checkedConfigs.length })}
+          </StatusBadge>
+          {selectedRuntime?.started_at ? (
+            <span className="text-muted">{t('tunnels.startedAt', { time: formatDate(selectedRuntime.started_at) })}</span>
           ) : null}
         </div>
 
@@ -283,15 +356,21 @@ export default function TunnelsPage() {
         {pageSuccess ? <div className="alert alert--success">{pageSuccess}</div> : null}
 
         <div className="action-row">
-          {status.running ? (
-            <Button disabled={loading} onClick={handleStop} variant="danger">
-              {t('tunnels.stopTunnel')}
-            </Button>
-          ) : (
-            <Button disabled={loading || !selectedConfig} onClick={handleStart} variant="primary">
-              {t('tunnels.startSelected')}
-            </Button>
-          )}
+          <Button disabled={loading || !selectedConfig} onClick={handleStart} variant="primary">
+            {t('tunnels.startSelected')}
+          </Button>
+          <Button disabled={loading || !selectedConfig || !runningTunnelIds.has(selectedConfig.id)} onClick={handleStop} variant="danger">
+            {t('tunnels.stopTunnel')}
+          </Button>
+          <Button disabled={loading || checkedConfigs.length === 0} onClick={handleStartChecked} variant="primary">
+            {t('tunnels.startChecked')}
+          </Button>
+          <Button disabled={loading || checkedConfigs.every((config) => !runningTunnelIds.has(config.id))} onClick={handleStopChecked} variant="danger">
+            {t('tunnels.stopChecked')}
+          </Button>
+          <Button disabled={loading || status.running_count === 0} onClick={handleStopAll} variant="ghost">
+            {t('tunnels.stopAll')}
+          </Button>
           <Button disabled={isFetchingConfigs} onClick={() => void loadConfigs()} variant="secondary">
             {t('tunnels.refreshList')}
           </Button>
@@ -346,6 +425,8 @@ export default function TunnelsPage() {
             <div className="tunnel-list">
               {configs.map((config) => {
                 const isSelected = config.id === selectedTunnelId;
+                const isChecked = checkedTunnelIds.includes(config.id);
+                const isRunning = runningTunnelIds.has(config.id);
                 const summary = summarizeNotes(config.notes);
                 return (
                   <button
@@ -355,9 +436,26 @@ export default function TunnelsPage() {
                     type="button"
                   >
                     <div className="tunnel-card__top">
+                      <input
+                        checked={isChecked}
+                        onChange={(event) => {
+                          event.stopPropagation();
+                          setCheckedTunnelIds((prev) => {
+                            if (event.target.checked) {
+                              if (prev.includes(config.id)) {
+                                return prev;
+                              }
+                              return [...prev, config.id];
+                            }
+                            return prev.filter((id) => id !== config.id);
+                          });
+                        }}
+                        onClick={(event) => event.stopPropagation()}
+                        type="checkbox"
+                      />
                       <h4 className="tunnel-card__title">{config.name}</h4>
-                      <StatusBadge tone={isSelected ? 'info' : 'neutral'}>
-                        {isSelected ? t('status.active') : t('status.saved')}
+                      <StatusBadge tone={isRunning ? 'success' : isSelected ? 'info' : 'neutral'}>
+                        {isRunning ? t('status.running') : isSelected ? t('status.active') : t('status.saved')}
                       </StatusBadge>
                     </div>
                     <p className="token-preview">{maskToken(config.token)}</p>

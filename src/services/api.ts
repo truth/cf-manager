@@ -2,12 +2,16 @@ import { invoke } from '@tauri-apps/api/core';
 import type { TunnelConfig, TunnelStatus, LogEntry } from '../types';
 
 // Tunnel Commands
-export async function startTunnel(token: string): Promise<string> {
-  return invoke<string>('start_tunnel', { token });
+export async function startTunnel(tunnelId: string, name: string, token: string): Promise<string> {
+  return invoke<string>('start_tunnel', { tunnelId, name, token });
 }
 
-export async function stopTunnel(): Promise<string> {
-  return invoke<string>('stop_tunnel');
+export async function stopTunnel(tunnelId: string): Promise<string> {
+  return invoke<string>('stop_tunnel', { tunnelId });
+}
+
+export async function stopAllTunnels(): Promise<string> {
+  return invoke<string>('stop_all_tunnels');
 }
 
 export async function getTunnelStatus(): Promise<TunnelStatus> {

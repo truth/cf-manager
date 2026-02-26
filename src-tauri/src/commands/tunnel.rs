@@ -17,10 +17,17 @@ pub struct TunnelConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunningTunnelStatus {
+    pub tunnel_id: String,
+    pub name: String,
+    pub started_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TunnelStatus {
     pub running: bool,
-    pub tunnel_id: Option<String>,
-    pub started_at: Option<String>,
+    pub running_count: usize,
+    pub tunnels: Vec<RunningTunnelStatus>,
 }
 
 type MutexGuard<'a, T> = tokio::sync::MutexGuard<'a, T>;
@@ -28,7 +35,7 @@ type MutexGuard<'a, T> = tokio::sync::MutexGuard<'a, T>;
 fn map_start_error(error: TunnelError) -> String {
     match error {
         TunnelError::AlreadyRunning => {
-            "Tunnel is already running. Stop the current tunnel before starting another one.".to_string()
+            "Tunnel is already running.".to_string()
         }
         TunnelError::StartFailed(message) => message,
         TunnelError::Io(io_error) => format!("Unable to start tunnel due to system IO error: {}", io_error),
@@ -47,10 +54,20 @@ fn map_stop_error(error: TunnelError) -> String {
 
 #[tauri::command]
 pub async fn start_tunnel(
+    tunnel_id: String,
+    name: String,
     token: String,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    if tunnel_id.trim().is_empty() {
+        return Err("Tunnel ID is empty.".to_string());
+    }
+
+    if name.trim().is_empty() {
+        return Err("Tunnel name is empty.".to_string());
+    }
+
     if token.trim().is_empty() {
         return Err("Token is empty. Please paste a valid Cloudflare tunnel token.".to_string());
     }
@@ -60,31 +77,53 @@ pub async fn start_tunnel(
 
     let mut manager: MutexGuard<'_, TunnelManager> = tunnel_manager.lock().await;
     manager
-        .start(token.trim(), app, logs)
+        .start(tunnel_id.trim(), name.trim(), token.trim(), app, logs)
         .await
         .map_err(map_start_error)?;
 
-    Ok("Tunnel started successfully".to_string())
+    Ok("Tunnel started successfully.".to_string())
 }
 
 #[tauri::command]
 pub async fn stop_tunnel(
+    tunnel_id: String,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    if tunnel_id.trim().is_empty() {
+        return Err("Tunnel ID is empty.".to_string());
+    }
+
     let tunnel_manager = state.tunnel_manager.clone();
     let logs = state.logs.clone();
 
     let mut manager: MutexGuard<'_, TunnelManager> = tunnel_manager.lock().await;
-    manager.stop(app, logs).await.map_err(map_stop_error)?;
+    manager
+        .stop(tunnel_id.trim(), app, logs)
+        .await
+        .map_err(map_stop_error)?;
 
-    Ok("Tunnel stopped".to_string())
+    Ok("Tunnel stopped.".to_string())
 }
 
 #[tauri::command]
-pub async fn get_tunnel_status(state: State<'_, AppState>) -> Result<TunnelStatus, String> {
+pub async fn stop_all_tunnels(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
     let tunnel_manager = state.tunnel_manager.clone();
+    let logs = state.logs.clone();
 
-    let manager: MutexGuard<'_, TunnelManager> = tunnel_manager.lock().await;
+    let mut manager: MutexGuard<'_, TunnelManager> = tunnel_manager.lock().await;
+    manager.stop_all(app, logs).await.map_err(map_stop_error)?;
+
+    Ok("All tunnels stopped.".to_string())
+}
+
+#[tauri::command]
+pub async fn get_tunnel_status(app: AppHandle, state: State<'_, AppState>) -> Result<TunnelStatus, String> {
+    let tunnel_manager = state.tunnel_manager.clone();
+    let logs = state.logs.clone();
+
+    let mut manager: MutexGuard<'_, TunnelManager> = tunnel_manager.lock().await;
+    manager.refresh_runtime(&app, &logs).await;
+
     Ok(manager.get_status())
 }

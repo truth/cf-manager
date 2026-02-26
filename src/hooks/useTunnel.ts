@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { getLogs, getTunnelStatus, startTunnel, stopTunnel } from '../services/api';
+import { getLogs, getTunnelStatus, startTunnel, stopAllTunnels, stopTunnel } from '../services/api';
 import type { LogEntry, LogFilter, TunnelStatus } from '../types';
 
 const MAX_LOG_ENTRIES = 500;
@@ -8,6 +8,7 @@ const MAX_LOG_ENTRIES = 500;
 interface TunnelStatusEvent {
   message?: string;
   started_at?: string;
+  name?: string;
   status: 'starting' | 'running' | 'stopping' | 'stopped' | 'error';
   tunnel_id?: string;
 }
@@ -15,8 +16,8 @@ interface TunnelStatusEvent {
 export function useTunnelStatus() {
   const [status, setStatus] = useState<TunnelStatus>({
     running: false,
-    tunnel_id: undefined,
-    started_at: undefined,
+    running_count: 0,
+    tunnels: [],
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -43,21 +44,8 @@ export function useTunnelStatus() {
       }
 
       const payload = event.payload;
-      if (payload.status === 'running') {
-        setStatus((prev) => ({
-          ...prev,
-          running: true,
-          started_at: payload.started_at ?? prev.started_at ?? new Date().toISOString(),
-          tunnel_id: payload.tunnel_id,
-        }));
-      }
-
-      if (payload.status === 'stopped') {
-        setStatus({
-          running: false,
-          started_at: undefined,
-          tunnel_id: undefined,
-        });
+      if (payload.status === 'running' || payload.status === 'stopped' || payload.status === 'starting') {
+        void fetchStatus();
       }
 
       if (payload.status === 'error') {
@@ -71,11 +59,21 @@ export function useTunnelStatus() {
     };
   }, [fetchStatus]);
 
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void fetchStatus();
+    }, 3000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [fetchStatus]);
+
   const start = useCallback(
-    async (token: string) => {
+    async (tunnelId: string, name: string, token: string) => {
       setLoading(true);
       try {
-        await startTunnel(token);
+        await startTunnel(tunnelId, name, token);
         await fetchStatus();
       } catch (startError) {
         setError(String(startError));
@@ -87,10 +85,28 @@ export function useTunnelStatus() {
     [fetchStatus],
   );
 
-  const stop = useCallback(async () => {
+  const startMany = useCallback(
+    async (items: Array<{ id: string; name: string; token: string }>) => {
+      setLoading(true);
+      try {
+        for (const item of items) {
+          await startTunnel(item.id, item.name, item.token);
+        }
+        await fetchStatus();
+      } catch (startError) {
+        setError(String(startError));
+        throw startError;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [fetchStatus],
+  );
+
+  const stop = useCallback(async (tunnelId: string) => {
     setLoading(true);
     try {
-      await stopTunnel();
+      await stopTunnel(tunnelId);
       await fetchStatus();
     } catch (stopError) {
       setError(String(stopError));
@@ -100,7 +116,20 @@ export function useTunnelStatus() {
     }
   }, [fetchStatus]);
 
-  return { status, loading, error, start, stop, refresh: fetchStatus };
+  const stopAll = useCallback(async () => {
+    setLoading(true);
+    try {
+      await stopAllTunnels();
+      await fetchStatus();
+    } catch (stopError) {
+      setError(String(stopError));
+      throw stopError;
+    } finally {
+      setLoading(false);
+    }
+  }, [fetchStatus]);
+
+  return { status, loading, error, start, startMany, stop, stopAll, refresh: fetchStatus };
 }
 
 export function useTunnelLogs() {

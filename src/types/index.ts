@@ -11,8 +11,14 @@ export interface TunnelConfig {
 
 export interface TunnelStatus {
   running: boolean;
-  tunnel_id?: string;
-  started_at?: string;
+  running_count: number;
+  tunnels: RunningTunnelStatus[];
+}
+
+export interface RunningTunnelStatus {
+  tunnel_id: string;
+  name: string;
+  started_at: string;
 }
 
 // Log Types

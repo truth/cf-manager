@@ -92,6 +92,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::tunnel::start_tunnel,
             commands::tunnel::stop_tunnel,
+            commands::tunnel::stop_all_tunnels,
             commands::tunnel::get_tunnel_status,
             commands::config::save_config,
             commands::config::delete_config,

@@ -1,6 +1,6 @@
-use crate::commands::tunnel::TunnelStatus;
+use crate::commands::tunnel::{RunningTunnelStatus, TunnelStatus};
 use crate::commands::types::LogEntry;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc as StdArc;
 use tauri::{AppHandle, Emitter};
 use thiserror::Error;
@@ -22,11 +22,13 @@ pub enum TunnelError {
 }
 
 pub struct TunnelManager {
-    running: bool,
-    tunnel_id: Option<String>,
-    started_at: Option<String>,
-    child: Option<tokio::process::Child>,
-    startup_command: Option<String>,
+    tunnels: HashMap<String, RunningTunnel>,
+}
+
+struct RunningTunnel {
+    name: String,
+    started_at: String,
+    child: tokio::process::Child,
 }
 
 struct StartCommandCandidate {
@@ -151,32 +153,57 @@ fn classify_stderr_level(line: &str) -> &'static str {
     }
 }
 
+fn build_tunnel_source(tunnel_name: &str) -> String {
+    format!("cloudflared:{}", tunnel_name)
+}
+
+fn build_starting_message(tunnel_name: &str) -> String {
+    format!("Starting tunnel \"{}\"", tunnel_name)
+}
+
+fn build_started_message(tunnel_name: &str, startup_command: &str) -> String {
+    format!(
+        "Tunnel \"{}\" process started with command: {}",
+        tunnel_name, startup_command
+    )
+}
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 impl TunnelManager {
     pub fn new() -> Self {
-        Self {
-            running: false,
-            tunnel_id: None,
-            started_at: None,
-            child: None,
-            startup_command: None,
-        }
+        Self { tunnels: HashMap::new() }
     }
 
     pub fn get_status(&self) -> TunnelStatus {
+        let mut tunnels: Vec<RunningTunnelStatus> = self
+            .tunnels
+            .iter()
+            .map(|(tunnel_id, item)| RunningTunnelStatus {
+                tunnel_id: tunnel_id.clone(),
+                name: item.name.clone(),
+                started_at: item.started_at.clone(),
+            })
+            .collect();
+        tunnels.sort_by(|a, b| a.name.cmp(&b.name));
+
         TunnelStatus {
-            running: self.running,
-            tunnel_id: self.tunnel_id.clone(),
-            started_at: self.started_at.clone(),
+            running: !tunnels.is_empty(),
+            running_count: tunnels.len(),
+            tunnels,
         }
     }
 
     pub async fn start(
         &mut self,
+        tunnel_id: &str,
+        tunnel_name: &str,
         token: &str,
         app: AppHandle,
         logs: StdArc<Mutex<Vec<LogEntry>>>,
     ) -> Result<(), TunnelError> {
-        if self.running {
+        if self.tunnels.contains_key(tunnel_id) {
             return Err(TunnelError::AlreadyRunning);
         }
 
@@ -187,20 +214,22 @@ impl TunnelManager {
             ));
         }
 
-        info!("Starting tunnel process");
+        info!("Starting tunnel process: {}", tunnel_name);
 
         let _ = app.emit(
             "tunnel-status",
             serde_json::json!({
                 "status": "starting",
-                "message": "Starting tunnel process"
+                "tunnel_id": tunnel_id,
+                "name": tunnel_name,
+                "message": build_starting_message(tunnel_name)
             }),
         );
 
         emit_and_store_log(
             &app,
             &logs,
-            build_log("info", "Preparing tunnel startup command", "app"),
+            build_log("info", format!("Preparing startup command for \"{}\"", tunnel_name), "app"),
         )
         .await;
 
@@ -220,11 +249,20 @@ impl TunnelManager {
             )
             .await;
 
-            let spawn = tokio::process::Command::new(&candidate.program)
+            let mut std_command = std::process::Command::new(&candidate.program);
+            std_command
                 .args(candidate.args.iter().map(String::as_str))
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn();
+                .stderr(std::process::Stdio::piped());
+
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                std_command.creation_flags(CREATE_NO_WINDOW);
+            }
+
+            let mut command = tokio::process::Command::from(std_command);
+            let spawn = command.spawn();
 
             match spawn {
                 Ok(child) => {
@@ -270,26 +308,37 @@ impl TunnelManager {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
 
-        self.child = Some(child);
-        self.running = true;
-        self.tunnel_id = Some(uuid::Uuid::new_v4().to_string());
-        self.started_at = Some(chrono::Utc::now().to_rfc3339());
-        self.startup_command = Some(startup_command.clone());
+        let started_at = chrono::Utc::now().to_rfc3339();
+        self.tunnels.insert(
+            tunnel_id.to_string(),
+            RunningTunnel {
+                name: tunnel_name.to_string(),
+                started_at: started_at.clone(),
+                child,
+            },
+        );
 
         emit_and_store_log(
             &app,
             &logs,
             build_log(
                 "info",
-                format!("Tunnel process started with command: {}", startup_command),
+                build_started_message(tunnel_name, &startup_command),
                 "app",
             ),
         )
         .await;
 
+        let tunnel_id_owned = tunnel_id.to_string();
+        let tunnel_name_owned = tunnel_name.to_string();
+        let tunnel_source = build_tunnel_source(&tunnel_name_owned);
+
         if let Some(stdout) = stdout {
             let app_clone = app.clone();
             let logs_clone = logs.clone();
+            let tunnel_source_stdout = tunnel_source.clone();
+            let tunnel_id_stdout = tunnel_id_owned.clone();
+            let tunnel_name_stdout = tunnel_name_owned.clone();
             tokio::spawn(async move {
                 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -303,7 +352,7 @@ impl TunnelManager {
                     emit_and_store_log(
                         &app_clone,
                         &logs_clone,
-                        build_log("info", trimmed.to_string(), "cloudflared"),
+                        build_log("info", trimmed.to_string(), &tunnel_source_stdout),
                     )
                     .await;
 
@@ -311,7 +360,8 @@ impl TunnelManager {
                         let _ = app_clone.emit(
                             "tunnel-connected",
                             serde_json::json!({
-                                "tunnel_id": "",
+                                "tunnel_id": tunnel_id_stdout.clone(),
+                                "name": tunnel_name_stdout.clone(),
                                 "domain": ""
                             }),
                         );
@@ -323,6 +373,9 @@ impl TunnelManager {
         if let Some(stderr) = stderr {
             let app_clone = app.clone();
             let logs_clone = logs.clone();
+            let tunnel_source_stderr = tunnel_source;
+            let tunnel_id_stderr = tunnel_id_owned;
+            let tunnel_name_stderr = tunnel_name_owned;
             tokio::spawn(async move {
                 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -337,7 +390,7 @@ impl TunnelManager {
                     emit_and_store_log(
                         &app_clone,
                         &logs_clone,
-                        build_log(level, trimmed.to_string(), "cloudflared"),
+                        build_log(level, trimmed.to_string(), &tunnel_source_stderr),
                     )
                     .await;
 
@@ -346,6 +399,8 @@ impl TunnelManager {
                             "tunnel-status",
                             serde_json::json!({
                                 "status": "error",
+                                "tunnel_id": tunnel_id_stderr.clone(),
+                                "name": tunnel_name_stderr.clone(),
                                 "message": trimmed
                             }),
                         );
@@ -358,31 +413,39 @@ impl TunnelManager {
             "tunnel-status",
             serde_json::json!({
                 "status": "running",
-                "tunnel_id": self.tunnel_id,
-                "started_at": self.started_at,
-                "command": self.startup_command,
+                "tunnel_id": tunnel_id,
+                "name": tunnel_name,
+                "started_at": started_at,
+                "command": startup_command,
             }),
         );
 
-        info!("Tunnel started successfully");
+        info!("Tunnel started successfully: {}", tunnel_name);
         Ok(())
     }
 
     pub async fn stop(
         &mut self,
+        tunnel_id: &str,
         app: AppHandle,
         logs: StdArc<Mutex<Vec<LogEntry>>>,
     ) -> Result<(), TunnelError> {
-        if !self.running {
-            return Err(TunnelError::NotRunning);
-        }
+        let mut tunnel = match self.tunnels.remove(tunnel_id) {
+            Some(value) => value,
+            None => return Err(TunnelError::NotRunning),
+        };
 
-        info!("Stopping tunnel process");
+        info!("Stopping tunnel process: {}", tunnel.name);
 
-        emit_and_store_log(&app, &logs, build_log("info", "Stopping tunnel process", "app")).await;
+        emit_and_store_log(
+            &app,
+            &logs,
+            build_log("info", format!("Stopping tunnel \"{}\"", tunnel.name), "app"),
+        )
+        .await;
 
-        if let Some(mut child) = self.child.take() {
-            if let Err(error) = child.kill().await {
+        if let Err(error) = tunnel.child.kill().await {
+            if error.kind() != std::io::ErrorKind::InvalidInput {
                 warn!("Failed to kill tunnel process: {}", error);
                 emit_and_store_log(
                     &app,
@@ -393,20 +456,76 @@ impl TunnelManager {
             }
         }
 
-        self.running = false;
-        self.tunnel_id = None;
-        self.started_at = None;
-        self.startup_command = None;
-
         let _ = app.emit(
             "tunnel-status",
             serde_json::json!({
-                "status": "stopped"
+                "status": "stopped",
+                "tunnel_id": tunnel_id,
+                "name": tunnel.name
             }),
         );
 
         emit_and_store_log(&app, &logs, build_log("info", "Tunnel stopped", "app")).await;
 
         Ok(())
+    }
+
+    pub async fn stop_all(&mut self, app: AppHandle, logs: StdArc<Mutex<Vec<LogEntry>>>) -> Result<(), TunnelError> {
+        let tunnel_ids: Vec<String> = self.tunnels.keys().cloned().collect();
+        if tunnel_ids.is_empty() {
+            return Err(TunnelError::NotRunning);
+        }
+
+        for tunnel_id in tunnel_ids {
+            let _ = self.stop(&tunnel_id, app.clone(), logs.clone()).await;
+        }
+
+        Ok(())
+    }
+
+    pub async fn refresh_runtime(&mut self, app: &AppHandle, logs: &StdArc<Mutex<Vec<LogEntry>>>) {
+        let ids: Vec<String> = self.tunnels.keys().cloned().collect();
+        let mut exited: Vec<(String, String, Option<i32>)> = Vec::new();
+
+        for tunnel_id in ids {
+            if let Some(tunnel) = self.tunnels.get_mut(&tunnel_id) {
+                match tunnel.child.try_wait() {
+                    Ok(Some(status)) => {
+                        exited.push((
+                            tunnel_id,
+                            tunnel.name.clone(),
+                            status.code(),
+                        ));
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        exited.push((tunnel_id, tunnel.name.clone(), Some(-1)));
+                        warn!("Failed to inspect tunnel process state: {}", error);
+                    }
+                }
+            }
+        }
+
+        for (tunnel_id, tunnel_name, exit_code) in exited {
+            self.tunnels.remove(&tunnel_id);
+            let message = format!(
+                "Tunnel \"{}\" exited{}",
+                tunnel_name,
+                exit_code
+                    .map(|code| format!(" with code {}", code))
+                    .unwrap_or_default()
+            );
+            emit_and_store_log(app, logs, build_log("warn", message.clone(), "app")).await;
+            let _ = app.emit(
+                "tunnel-status",
+                serde_json::json!({
+                    "status": "stopped",
+                    "tunnel_id": tunnel_id,
+                    "name": tunnel_name,
+                    "message": message,
+                }),
+            );
+        }
+
     }
 }
