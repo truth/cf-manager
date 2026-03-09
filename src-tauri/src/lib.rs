@@ -25,8 +25,8 @@ fn setup_logging() {
 
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let show_item = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
-    let start_item = MenuItem::with_id(app, "start", "Start Tunnel", true, None::<&str>)?;
-    let stop_item = MenuItem::with_id(app, "stop", "Stop Tunnel", true, None::<&str>)?;
+    let start_item = MenuItem::with_id(app, "start", "Start Profile", true, None::<&str>)?;
+    let stop_item = MenuItem::with_id(app, "stop", "Stop Profile", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
     let menu = Menu::with_items(app, &[&show_item, &start_item, &stop_item, &quit_item])?;
@@ -44,10 +44,10 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 "start" => {
-                    info!("Start tunnel from tray");
+                    info!("Start profile from tray");
                 }
                 "stop" => {
-                    info!("Stop tunnel from tray");
+                    info!("Stop profile from tray");
                 }
                 "quit" => {
                     app.exit(0);

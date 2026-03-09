@@ -5,7 +5,7 @@ import type { LogEntry, LogFilter, ProfileType, TunnelStatus } from '../types';
 
 const MAX_LOG_ENTRIES = 500;
 
-interface TunnelStatusEvent {
+interface ProfileStatusEvent {
   message?: string;
   started_at?: string;
   name?: string;
@@ -16,7 +16,7 @@ interface TunnelStatusEvent {
   local_endpoint?: string;
 }
 
-export function useTunnelStatus() {
+export function useProfileStatus() {
   const [status, setStatus] = useState<TunnelStatus>({
     running: false,
     running_count: 0,
@@ -41,7 +41,7 @@ export function useTunnelStatus() {
     let active = true;
     void fetchStatus();
 
-    const unlistenPromise = listen<TunnelStatusEvent>('tunnel-status', (event) => {
+    const unlistenPromise = listen<ProfileStatusEvent>('tunnel-status', (event) => {
       if (!active) {
         return;
       }
@@ -52,7 +52,7 @@ export function useTunnelStatus() {
       }
 
       if (payload.status === 'error') {
-        setError(payload.message ?? 'Tunnel returned an error status event.');
+        setError(payload.message ?? 'Profile returned an error status event.');
       }
     });
 

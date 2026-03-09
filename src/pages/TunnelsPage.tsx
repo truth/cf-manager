@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import Button from '../components/ui/Button';
 import Dialog from '../components/ui/Dialog';
 import StatusBadge from '../components/ui/StatusBadge';
-import { useTunnelStatus } from '../hooks/useTunnel';
+import { useProfileStatus } from '../hooks/useTunnel';
 import { useI18n } from '../i18n/I18nProvider';
 import { deleteConfig, listTunnels, saveConfig } from '../services/api';
 import type { ProfileType, PublishProfile, TunnelConfig } from '../types';
@@ -155,7 +155,7 @@ function createEmptyForm(): TunnelFormState {
 
 export default function TunnelsPage() {
   const { t } = useI18n();
-  const { status, loading, error, refresh, start, startMany, stop, stopAll } = useTunnelStatus();
+  const { status, loading, error, refresh, start, startMany, stop, stopAll } = useProfileStatus();
   const [configs, setConfigs] = useState<TunnelConfig[]>([]);
   const [isFetchingConfigs, setIsFetchingConfigs] = useState(false);
   const [selectedTunnelId, setSelectedTunnelId] = useState<string | null>(null);
