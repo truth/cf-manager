@@ -1,3 +1,4 @@
+mod cloudflared;
 mod commands;
 mod state;
 mod tunnel;
@@ -77,7 +78,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 pub fn run() {
     setup_logging();
 
-    info!("Starting Cloudflare Tunnel Manager v1.1.0");
+    info!("Starting Cloudflare Tunnel Manager v1.1.1");
 
     let app_state = AppState::new();
 
@@ -90,10 +91,12 @@ pub fn run() {
         ))
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
-            commands::tunnel::start_tunnel,
-            commands::tunnel::stop_tunnel,
-            commands::tunnel::stop_all_tunnels,
-            commands::tunnel::get_tunnel_status,
+            commands::tunnel::start_profile,
+            commands::tunnel::stop_profile,
+            commands::tunnel::stop_all_profiles,
+            commands::tunnel::get_runtime_status,
+            commands::tunnel::validate_profile,
+            commands::client::detect_cloudflared,
             commands::config::save_config,
             commands::config::delete_config,
             commands::config::get_config,

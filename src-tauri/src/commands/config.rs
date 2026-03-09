@@ -4,7 +4,7 @@ use tauri::{AppHandle, State};
 use tauri_plugin_store::StoreExt;
 use tokio::sync::Mutex;
 
-use crate::commands::tunnel::TunnelConfig;
+use crate::commands::types::{LegacyTunnelConfig, TunnelConfig};
 use crate::state::AppState;
 
 const CONFIG_STORE_FILE: &str = "tunnels.json";
@@ -19,12 +19,32 @@ fn load_configs_from_store(app: &AppHandle) -> Result<HashMap<String, TunnelConf
         return Ok(HashMap::new());
     };
 
-    let configs: Vec<TunnelConfig> = serde_json::from_value(value.clone())
-        .map_err(|error| format!("Failed to parse config store data: {}", error))?;
+    let configs: Vec<TunnelConfig> = match serde_json::from_value(value.clone()) {
+        Ok(configs) => configs,
+        Err(_) => {
+            let legacy_configs: Vec<LegacyTunnelConfig> = serde_json::from_value(value.clone())
+                .map_err(|error| format!("Failed to parse config store data: {}", error))?;
+
+            legacy_configs
+                .into_iter()
+                .map(|config| TunnelConfig::Publish {
+                    id: config.id,
+                    name: config.name,
+                    token: config.token,
+                    hostname: None,
+                    origin_url: None,
+                    notes: config.notes,
+                    tags: config.tags,
+                    created_at: config.created_at,
+                    updated_at: config.updated_at,
+                })
+                .collect()
+        }
+    };
 
     Ok(configs
         .into_iter()
-        .map(|config| (config.id.clone(), config))
+        .map(|config| (config.id().to_string(), config))
         .collect())
 }
 
@@ -67,7 +87,7 @@ pub async fn save_config(
     sync_configs_from_store_if_needed(&app, &configs).await?;
 
     let mut guard = configs.lock().await;
-    guard.insert(config.id.clone(), config);
+    guard.insert(config.id().to_string(), config);
 
     persist_configs_to_store(&app, &guard)?;
     Ok(())
@@ -123,34 +143,9 @@ pub async fn export_configs(
     sync_configs_from_store_if_needed(&app, &configs).await?;
 
     let guard = configs.lock().await;
-    let configs_vec: Vec<&TunnelConfig> = guard.values().collect();
-    
-    // Export as JSON (with tokens masked for security)
-    #[derive(serde::Serialize)]
-    struct ExportConfig {
-        id: String,
-        name: String,
-        token: String,
-        notes: Option<String>,
-        tags: Option<Vec<String>>,
-        created_at: String,
-        updated_at: String,
-    }
-    
-    let export_configs: Vec<ExportConfig> = configs_vec.iter().map(|c| {
-        ExportConfig {
-            id: c.id.clone(),
-            name: c.name.clone(),
-            token: c.token.clone(),
-            notes: c.notes.clone(),
-            tags: c.tags.clone(),
-            created_at: c.created_at.clone(),
-            updated_at: c.updated_at.clone(),
-        }
-    }).collect();
-    
-    serde_json::to_string_pretty(&export_configs)
-        .map_err(|e| e.to_string())
+    let config_values: Vec<TunnelConfig> = guard.values().cloned().collect();
+
+    serde_json::to_string_pretty(&config_values).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -159,43 +154,41 @@ pub async fn import_configs(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<usize, String> {
-    #[derive(serde::Deserialize)]
-    struct ImportConfig {
-        id: Option<String>,
-        name: String,
-        token: String,
-        notes: Option<String>,
-        tags: Option<Vec<String>>,
-        created_at: Option<String>,
-        updated_at: Option<String>,
-    }
-    
-    let import_configs: Vec<ImportConfig> = serde_json::from_str(&json_data)
-        .map_err(|e| format!("Invalid JSON: {}", e))?;
-    
+    let import_configs: Vec<TunnelConfig> = match serde_json::from_str(&json_data) {
+        Ok(configs) => configs,
+        Err(_) => {
+            let legacy_configs: Vec<LegacyTunnelConfig> = serde_json::from_str(&json_data)
+                .map_err(|e| format!("Invalid JSON: {}", e))?;
+
+            legacy_configs
+                .into_iter()
+                .map(|ic| TunnelConfig::Publish {
+                    id: ic.id,
+                    name: ic.name,
+                    token: ic.token,
+                    hostname: None,
+                    origin_url: None,
+                    notes: ic.notes,
+                    tags: ic.tags,
+                    created_at: ic.created_at,
+                    updated_at: ic.updated_at,
+                })
+                .collect()
+        }
+    };
+
     let configs: StdArc<Mutex<HashMap<String, TunnelConfig>>> = state.configs.clone();
     sync_configs_from_store_if_needed(&app, &configs).await?;
 
     let mut guard = configs.lock().await;
-    
-    let now = chrono::Utc::now().to_rfc3339();
     let mut count = 0;
-    
-    for ic in import_configs {
-        let config = TunnelConfig {
-            id: ic.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-            name: ic.name,
-            token: ic.token,
-            notes: ic.notes,
-            tags: ic.tags,
-            created_at: ic.created_at.unwrap_or_else(|| now.clone()),
-            updated_at: ic.updated_at.unwrap_or_else(|| now.clone()),
-        };
-        guard.insert(config.id.clone(), config);
+
+    for config in import_configs {
+        guard.insert(config.id().to_string(), config);
         count += 1;
     }
 
     persist_configs_to_store(&app, &guard)?;
-    
+
     Ok(count)
 }

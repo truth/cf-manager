@@ -1,7 +1,8 @@
-use crate::commands::tunnel::{RunningTunnelStatus, TunnelStatus};
-use crate::commands::types::LogEntry;
-use crate::tunnel::download::CloudflaredDownloader;
-use std::collections::{HashMap, HashSet};
+use crate::cloudflared::binary::resolve_cloudflared_binary;
+use crate::cloudflared::command::{build_launch_plan, LaunchPlan};
+use crate::commands::types::{LogEntry, RunningTunnelStatus, TunnelConfig, TunnelStatus};
+use std::collections::HashMap;
+use std::net::TcpListener;
 use std::sync::Arc as StdArc;
 use tauri::{AppHandle, Emitter};
 use thiserror::Error;
@@ -30,94 +31,15 @@ pub struct TunnelManager {
 
 struct RunningTunnel {
     name: String,
+    profile_type: crate::commands::types::ProfileType,
     started_at: String,
+    target: Option<String>,
+    local_endpoint: Option<String>,
     child: tokio::process::Child,
 }
 
-struct StartCommandCandidate {
-    args: Vec<String>,
-    display: String,
-    program: String,
-}
-
-impl StartCommandCandidate {
-    fn new(program: impl Into<String>, token: &str) -> Self {
-        let program = program.into();
-        Self {
-            args: vec![
-                "tunnel".to_string(),
-                "run".to_string(),
-                "--token".to_string(),
-                token.to_string(),
-            ],
-            display: format!("{} tunnel run --token <hidden>", program),
-            program,
-        }
-    }
-}
-
-fn append_candidate(
-    candidates: &mut Vec<StartCommandCandidate>,
-    seen_programs: &mut HashSet<String>,
-    program: impl Into<String>,
-    token: &str,
-) {
-    let program = program.into();
-    if program.trim().is_empty() {
-        return;
-    }
-
-    let key = program.to_lowercase();
-    if seen_programs.insert(key) {
-        candidates.push(StartCommandCandidate::new(program, token));
-    }
-}
-
-fn build_start_command_candidates(token: &str) -> Vec<StartCommandCandidate> {
-    let mut candidates = Vec::new();
-    let mut seen_programs = HashSet::new();
-
-    if let Ok(path) = std::env::var("CLOUDFLARED_PATH") {
-        append_candidate(&mut candidates, &mut seen_programs, path, token);
-    }
-
-    append_candidate(
-        &mut candidates,
-        &mut seen_programs,
-        ".\\binaries\\cloudflared.exe",
-        token,
-    );
-    append_candidate(
-        &mut candidates,
-        &mut seen_programs,
-        ".\\src-tauri\\binaries\\cloudflared.exe",
-        token,
-    );
-
-    if let Ok(current_dir) = std::env::current_dir() {
-        append_candidate(
-            &mut candidates,
-            &mut seen_programs,
-            current_dir.join("binaries").join("cloudflared.exe").display().to_string(),
-            token,
-        );
-        append_candidate(
-            &mut candidates,
-            &mut seen_programs,
-            current_dir
-                .join("src-tauri")
-                .join("binaries")
-                .join("cloudflared.exe")
-                .display()
-                .to_string(),
-            token,
-        );
-    }
-
-    append_candidate(&mut candidates, &mut seen_programs, "cloudflared", token);
-
-    candidates
-}
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 fn build_log(level: &str, message: impl Into<String>, source: &str) -> LogEntry {
     LogEntry {
@@ -156,23 +78,60 @@ fn classify_stderr_level(line: &str) -> &'static str {
     }
 }
 
-fn build_tunnel_source(tunnel_name: &str) -> String {
-    format!("cloudflared:{}", tunnel_name)
+fn build_tunnel_source(profile_type: &crate::commands::types::ProfileType, tunnel_name: &str) -> String {
+    let kind = match profile_type {
+        crate::commands::types::ProfileType::Publish => "publish",
+        crate::commands::types::ProfileType::Forward => "forward",
+    };
+    format!("cloudflared:{}:{}", kind, tunnel_name)
 }
 
 fn build_starting_message(tunnel_name: &str) -> String {
-    format!("Starting tunnel \"{}\"", tunnel_name)
+    format!("Starting profile \"{}\"", tunnel_name)
 }
 
 fn build_started_message(tunnel_name: &str, startup_command: &str) -> String {
     format!(
-        "Tunnel \"{}\" process started with command: {}",
+        "Profile \"{}\" process started with command: {}",
         tunnel_name, startup_command
     )
 }
 
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
+fn ensure_forward_port_available(config: &TunnelConfig) -> Result<(), TunnelError> {
+    if let TunnelConfig::Forward {
+        local_bind_host,
+        local_bind_port,
+        ..
+    } = config
+    {
+        TcpListener::bind((local_bind_host.as_str(), *local_bind_port))
+            .map(|listener| drop(listener))
+            .map_err(|error| {
+                TunnelError::StartFailed(format!(
+                    "Unable to bind local endpoint {}:{}: {}",
+                    local_bind_host, local_bind_port, error
+                ))
+            })?;
+    }
+
+    Ok(())
+}
+
+fn spawn_with_plan(plan: &LaunchPlan) -> Result<tokio::process::Child, std::io::Error> {
+    let mut std_command = std::process::Command::new(&plan.program);
+    std_command
+        .args(plan.args.iter().map(String::as_str))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        std_command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    tokio::process::Command::from(std_command).spawn()
+}
 
 impl TunnelManager {
     pub fn new() -> Self {
@@ -186,7 +145,10 @@ impl TunnelManager {
             .map(|(tunnel_id, item)| RunningTunnelStatus {
                 tunnel_id: tunnel_id.clone(),
                 name: item.name.clone(),
+                profile_type: item.profile_type.clone(),
                 started_at: item.started_at.clone(),
+                target: item.target.clone(),
+                local_endpoint: item.local_endpoint.clone(),
             })
             .collect();
         tunnels.sort_by(|a, b| a.name.cmp(&b.name));
@@ -198,26 +160,22 @@ impl TunnelManager {
         }
     }
 
-    pub async fn start(
+    pub async fn start_profile(
         &mut self,
-        tunnel_id: &str,
-        tunnel_name: &str,
-        token: &str,
+        config: &TunnelConfig,
         app: AppHandle,
         logs: StdArc<Mutex<Vec<LogEntry>>>,
     ) -> Result<(), TunnelError> {
+        let tunnel_id = config.id().trim();
+        let tunnel_name = config.name().trim();
+
         if self.tunnels.contains_key(tunnel_id) {
             return Err(TunnelError::AlreadyRunning);
         }
 
-        let trimmed_token = token.trim();
-        if trimmed_token.is_empty() {
-            return Err(TunnelError::StartFailed(
-                "Token is empty. Please paste a valid Cloudflare tunnel token.".to_string(),
-            ));
-        }
+        ensure_forward_port_available(config)?;
 
-        info!("Starting tunnel process: {}", tunnel_name);
+        info!("Starting profile process: {}", tunnel_name);
 
         let _ = app.emit(
             "tunnel-status",
@@ -225,6 +183,7 @@ impl TunnelManager {
                 "status": "starting",
                 "tunnel_id": tunnel_id,
                 "name": tunnel_name,
+                "type": config.profile_type(),
                 "message": build_starting_message(tunnel_name)
             }),
         );
@@ -236,148 +195,56 @@ impl TunnelManager {
         )
         .await;
 
-        let candidates = build_start_command_candidates(trimmed_token);
-        let mut spawn_errors = Vec::new();
-        let mut selected: Option<(tokio::process::Child, String)> = None;
-
-        for candidate in candidates {
-            emit_and_store_log(
-                &app,
-                &logs,
-                build_log(
-                    "info",
-                    format!("Attempting startup command: {}", candidate.display),
-                    "app",
-                ),
+        let binary = resolve_cloudflared_binary(true).ok_or_else(|| {
+            TunnelError::StartFailed(
+                "Unable to launch cloudflared. Install cloudflared or configure CLOUDFLARED_PATH.".to_string(),
             )
-            .await;
+        })?;
 
-            let mut std_command = std::process::Command::new(&candidate.program);
-            std_command
-                .args(candidate.args.iter().map(String::as_str))
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
+        emit_and_store_log(
+            &app,
+            &logs,
+            build_log(
+                "info",
+                format!(
+                    "Using cloudflared binary: {} ({}){}",
+                    binary.path,
+                    binary.source,
+                    binary
+                        .version
+                        .as_ref()
+                        .map(|v| format!(", version: {}", v))
+                        .unwrap_or_default()
+                ),
+                "app",
+            ),
+        )
+        .await;
 
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                std_command.creation_flags(CREATE_NO_WINDOW);
-            }
+        let plan = build_launch_plan(config, binary.path.clone());
+        emit_and_store_log(
+            &app,
+            &logs,
+            build_log("info", format!("Attempting startup command: {}", plan.display), "app"),
+        )
+        .await;
 
-            let mut command = tokio::process::Command::from(std_command);
-            let spawn = command.spawn();
-
-            match spawn {
-                Ok(child) => {
-                    selected = Some((child, candidate.display.clone()));
-                    break;
-                }
-                Err(error) => {
-                    let reason = format!("{} -> {}", candidate.display, error);
-                    spawn_errors.push(reason.clone());
-                    emit_and_store_log(&app, &logs, build_log("warn", reason, "app")).await;
-                }
-            }
-        }
-
-        let (mut child, startup_command) = match selected {
-            Some(value) => value,
-            None => {
-                emit_and_store_log(
-                    &app,
-                    &logs,
-                    build_log("info", "cloudflared not found, attempting to download...", "app"),
-                )
-                .await;
-
-                let _ = app.emit(
-                    "tunnel-status",
-                    serde_json::json!({
-                        "status": "downloading",
-                        "tunnel_id": tunnel_id,
-                        "name": tunnel_name,
-                        "message": "cloudflared not found. Downloading..."
-                    }),
-                );
-
-                let download_result = tokio::task::spawn_blocking(|| {
-                    CloudflaredDownloader::download_to_common_locations()
-                })
-                .await
-                .unwrap_or(None);
-
-                if let Some(downloaded_path) = download_result {
-                    let path_str = downloaded_path.to_string_lossy().to_string();
-                    emit_and_store_log(
-                        &app,
-                        &logs,
-                        build_log("info", format!("Successfully downloaded to {:?}", path_str), "app"),
-                    )
-                    .await;
-
-                    let candidate = StartCommandCandidate::new(&path_str, trimmed_token);
-
-                    let mut std_command = std::process::Command::new(&candidate.program);
-                    std_command
-                        .args(candidate.args.iter().map(String::as_str))
-                        .stdout(std::process::Stdio::piped())
-                        .stderr(std::process::Stdio::piped());
-
-                    #[cfg(windows)]
-                    {
-                        use std::os::windows::process::CommandExt;
-                        std_command.creation_flags(CREATE_NO_WINDOW);
-                    }
-
-                    let mut command = tokio::process::Command::from(std_command);
-                    match command.spawn() {
-                        Ok(new_child) => (new_child, candidate.display),
-                        Err(error) => {
-                            let friendly = format!("Failed to spawn downloaded cloudflared: {}", error);
-                            emit_and_store_log(&app, &logs, build_log("error", friendly.clone(), "app")).await;
-                            let _ = app.emit(
-                                "tunnel-status",
-                                serde_json::json!({ "status": "error", "message": friendly }),
-                            );
-                            return Err(TunnelError::StartFailed(friendly));
-                        }
-                    }
-                } else {
-                    let details = if spawn_errors.is_empty() {
-                        "No startup command candidates available.".to_string()
-                    } else {
-                        spawn_errors.join(" | ")
-                    };
-                    let friendly = format!(
-                        "Unable to launch cloudflared. Install cloudflared or configure CLOUDFLARED_PATH. Details: {}",
-                        details
-                    );
-
-                    emit_and_store_log(&app, &logs, build_log("error", friendly.clone(), "app")).await;
-                    let _ = app.emit(
-                        "tunnel-status",
-                        serde_json::json!({
-                            "status": "error",
-                            "message": friendly
-                        }),
-                    );
-
-                    return Err(TunnelError::StartFailed(
-                        "Unable to launch cloudflared. Install cloudflared or configure CLOUDFLARED_PATH.".to_string(),
-                    ));
-                }
-            }
-        };
+        let mut child = spawn_with_plan(&plan).map_err(|error| {
+            TunnelError::StartFailed(format!("Unable to launch cloudflared with command {}: {}", plan.display, error))
+        })?;
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-
         let started_at = chrono::Utc::now().to_rfc3339();
+
         self.tunnels.insert(
             tunnel_id.to_string(),
             RunningTunnel {
                 name: tunnel_name.to_string(),
+                profile_type: plan.profile_type.clone(),
                 started_at: started_at.clone(),
+                target: plan.target.clone(),
+                local_endpoint: plan.local_endpoint.clone(),
                 child,
             },
         );
@@ -385,17 +252,16 @@ impl TunnelManager {
         emit_and_store_log(
             &app,
             &logs,
-            build_log(
-                "info",
-                build_started_message(tunnel_name, &startup_command),
-                "app",
-            ),
+            build_log("info", build_started_message(tunnel_name, &plan.display), "app"),
         )
         .await;
 
         let tunnel_id_owned = tunnel_id.to_string();
         let tunnel_name_owned = tunnel_name.to_string();
-        let tunnel_source = build_tunnel_source(&tunnel_name_owned);
+        let profile_type_owned = plan.profile_type.clone();
+        let target_owned = plan.target.clone();
+        let local_endpoint_owned = plan.local_endpoint.clone();
+        let tunnel_source = build_tunnel_source(&profile_type_owned, &tunnel_name_owned);
 
         if let Some(stdout) = stdout {
             let app_clone = app.clone();
@@ -403,6 +269,9 @@ impl TunnelManager {
             let tunnel_source_stdout = tunnel_source.clone();
             let tunnel_id_stdout = tunnel_id_owned.clone();
             let tunnel_name_stdout = tunnel_name_owned.clone();
+            let profile_type_stdout = profile_type_owned.clone();
+            let target_stdout = target_owned.clone();
+            let local_endpoint_stdout = local_endpoint_owned.clone();
             tokio::spawn(async move {
                 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -420,13 +289,16 @@ impl TunnelManager {
                     )
                     .await;
 
-                    if trimmed.contains("Connection registered") {
+                    if trimmed.contains("Connection registered") || trimmed.contains("Start listening") {
                         let _ = app_clone.emit(
-                            "tunnel-connected",
+                            "tunnel-status",
                             serde_json::json!({
+                                "status": "running",
                                 "tunnel_id": tunnel_id_stdout.clone(),
                                 "name": tunnel_name_stdout.clone(),
-                                "domain": ""
+                                "type": profile_type_stdout,
+                                "target": target_stdout,
+                                "local_endpoint": local_endpoint_stdout,
                             }),
                         );
                     }
@@ -438,8 +310,11 @@ impl TunnelManager {
             let app_clone = app.clone();
             let logs_clone = logs.clone();
             let tunnel_source_stderr = tunnel_source;
-            let tunnel_id_stderr = tunnel_id_owned;
-            let tunnel_name_stderr = tunnel_name_owned;
+            let tunnel_id_stderr = tunnel_id_owned.clone();
+            let tunnel_name_stderr = tunnel_name_owned.clone();
+            let profile_type_stderr = profile_type_owned.clone();
+            let target_stderr = target_owned.clone();
+            let local_endpoint_stderr = local_endpoint_owned.clone();
             tokio::spawn(async move {
                 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -465,6 +340,9 @@ impl TunnelManager {
                                 "status": "error",
                                 "tunnel_id": tunnel_id_stderr.clone(),
                                 "name": tunnel_name_stderr.clone(),
+                                "type": profile_type_stderr,
+                                "target": target_stderr,
+                                "local_endpoint": local_endpoint_stderr,
                                 "message": trimmed
                             }),
                         );
@@ -479,12 +357,15 @@ impl TunnelManager {
                 "status": "running",
                 "tunnel_id": tunnel_id,
                 "name": tunnel_name,
+                "type": plan.profile_type,
                 "started_at": started_at,
-                "command": startup_command,
+                "target": plan.target,
+                "local_endpoint": plan.local_endpoint,
+                "command": plan.display,
             }),
         );
 
-        info!("Tunnel started successfully: {}", tunnel_name);
+        info!("Profile started successfully: {}", tunnel_name);
         Ok(())
     }
 
@@ -499,18 +380,18 @@ impl TunnelManager {
             None => return Err(TunnelError::NotRunning),
         };
 
-        info!("Stopping tunnel process: {}", tunnel.name);
+        info!("Stopping profile process: {}", tunnel.name);
 
         emit_and_store_log(
             &app,
             &logs,
-            build_log("info", format!("Stopping tunnel \"{}\"", tunnel.name), "app"),
+            build_log("info", format!("Stopping profile \"{}\"", tunnel.name), "app"),
         )
         .await;
 
         if let Err(error) = tunnel.child.kill().await {
             if error.kind() != std::io::ErrorKind::InvalidInput {
-                warn!("Failed to kill tunnel process: {}", error);
+                warn!("Failed to kill profile process: {}", error);
                 emit_and_store_log(
                     &app,
                     &logs,
@@ -525,11 +406,14 @@ impl TunnelManager {
             serde_json::json!({
                 "status": "stopped",
                 "tunnel_id": tunnel_id,
-                "name": tunnel.name
+                "name": tunnel.name,
+                "type": tunnel.profile_type,
+                "target": tunnel.target,
+                "local_endpoint": tunnel.local_endpoint,
             }),
         );
 
-        emit_and_store_log(&app, &logs, build_log("info", "Tunnel stopped", "app")).await;
+        emit_and_store_log(&app, &logs, build_log("info", "Profile stopped", "app")).await;
 
         Ok(())
     }
@@ -549,7 +433,7 @@ impl TunnelManager {
 
     pub async fn refresh_runtime(&mut self, app: &AppHandle, logs: &StdArc<Mutex<Vec<LogEntry>>>) {
         let ids: Vec<String> = self.tunnels.keys().cloned().collect();
-        let mut exited: Vec<(String, String, Option<i32>)> = Vec::new();
+        let mut exited: Vec<(String, String, crate::commands::types::ProfileType, Option<String>, Option<String>, Option<i32>)> = Vec::new();
 
         for tunnel_id in ids {
             if let Some(tunnel) = self.tunnels.get_mut(&tunnel_id) {
@@ -558,22 +442,32 @@ impl TunnelManager {
                         exited.push((
                             tunnel_id,
                             tunnel.name.clone(),
+                            tunnel.profile_type.clone(),
+                            tunnel.target.clone(),
+                            tunnel.local_endpoint.clone(),
                             status.code(),
                         ));
                     }
                     Ok(None) => {}
                     Err(error) => {
-                        exited.push((tunnel_id, tunnel.name.clone(), Some(-1)));
-                        warn!("Failed to inspect tunnel process state: {}", error);
+                        exited.push((
+                            tunnel_id,
+                            tunnel.name.clone(),
+                            tunnel.profile_type.clone(),
+                            tunnel.target.clone(),
+                            tunnel.local_endpoint.clone(),
+                            Some(-1),
+                        ));
+                        warn!("Failed to inspect profile process state: {}", error);
                     }
                 }
             }
         }
 
-        for (tunnel_id, tunnel_name, exit_code) in exited {
+        for (tunnel_id, tunnel_name, profile_type, target, local_endpoint, exit_code) in exited {
             self.tunnels.remove(&tunnel_id);
             let message = format!(
-                "Tunnel \"{}\" exited{}",
+                "Profile \"{}\" exited{}",
                 tunnel_name,
                 exit_code
                     .map(|code| format!(" with code {}", code))
@@ -586,10 +480,12 @@ impl TunnelManager {
                     "status": "stopped",
                     "tunnel_id": tunnel_id,
                     "name": tunnel_name,
+                    "type": profile_type,
+                    "target": target,
+                    "local_endpoint": local_endpoint,
                     "message": message,
                 }),
             );
         }
-
     }
 }

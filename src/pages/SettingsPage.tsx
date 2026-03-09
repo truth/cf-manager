@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Button from '../components/ui/Button';
 import StatusBadge from '../components/ui/StatusBadge';
 import { useI18n } from '../i18n/I18nProvider';
+import { detectCloudflared } from '../services/api';
 import type { Locale } from '../i18n/messages';
-import type { AppSettings } from '../types';
+import type { AppSettings, CloudflaredInfo } from '../types';
 
 const THEMES: AppSettings['theme'][] = ['dark', 'light', 'system'];
 const RETENTION_DAYS = [1, 7, 14, 30] as const;
@@ -18,12 +19,31 @@ export default function SettingsPage() {
     logRetentionDays: 7,
   });
   const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [cloudflaredInfo, setCloudflaredInfo] = useState<CloudflaredInfo | null>(null);
+  const [checkingClient, setCheckingClient] = useState(false);
+  const [clientError, setClientError] = useState<string | null>(null);
 
   const handleSave = () => {
-    // Placeholder: backend persistence is not wired yet.
     console.info('Settings saved:', settings);
     setSavedAt(new Date().toLocaleTimeString());
   };
+
+  const loadClientInfo = async () => {
+    setCheckingClient(true);
+    try {
+      const info = await detectCloudflared();
+      setCloudflaredInfo(info);
+      setClientError(null);
+    } catch (error) {
+      setClientError(String(error));
+    } finally {
+      setCheckingClient(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadClientInfo();
+  }, []);
 
   return (
     <div className="page-stack">
@@ -48,6 +68,32 @@ export default function SettingsPage() {
       </section>
 
       <section className="settings-grid">
+        <article className="setting-card">
+          <h3 className="setting-card__title">{t('settings.client.title')}</h3>
+          <p className="setting-card__description">{t('settings.client.subtitle')}</p>
+
+          <StatusBadge tone={cloudflaredInfo?.found ? 'success' : 'neutral'}>
+            {cloudflaredInfo?.found ? t('settings.client.installed') : t('settings.client.missing')}
+          </StatusBadge>
+
+          {clientError ? <div className="alert alert--danger">{t('settings.client.detectFailed', { details: clientError })}</div> : null}
+
+          <div className="field-grid" style={{ marginTop: '14px' }}>
+            <p className="text-muted">{t('settings.client.path')}</p>
+            <p>{cloudflaredInfo?.path ?? t('settings.client.empty')}</p>
+            <p className="text-muted">{t('settings.client.source')}</p>
+            <p>{cloudflaredInfo?.source ?? t('settings.client.empty')}</p>
+            <p className="text-muted">{t('settings.client.version')}</p>
+            <p>{cloudflaredInfo?.version ?? t('settings.client.empty')}</p>
+          </div>
+
+          <div className="action-row">
+            <Button disabled={checkingClient} onClick={() => void loadClientInfo()} variant="secondary">
+              {t('settings.client.refresh')}
+            </Button>
+          </div>
+        </article>
+
         <article className="setting-card">
           <h3 className="setting-card__title">{t('settings.language.title')}</h3>
           <p className="setting-card__description">{t('settings.language.subtitle')}</p>

@@ -1,21 +1,29 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { TunnelConfig, TunnelStatus, LogEntry } from '../types';
+import type { CloudflaredInfo, LogEntry, TunnelConfig, TunnelStatus, ValidationResult } from '../types';
 
-// Tunnel Commands
-export async function startTunnel(tunnelId: string, name: string, token: string): Promise<string> {
-  return invoke<string>('start_tunnel', { tunnelId, name, token });
+// Runtime Commands
+export async function startProfile(profileId: string): Promise<string> {
+  return invoke<string>('start_profile', { profileId });
 }
 
-export async function stopTunnel(tunnelId: string): Promise<string> {
-  return invoke<string>('stop_tunnel', { tunnelId });
+export async function stopProfile(profileId: string): Promise<string> {
+  return invoke<string>('stop_profile', { profileId });
 }
 
-export async function stopAllTunnels(): Promise<string> {
-  return invoke<string>('stop_all_tunnels');
+export async function stopAllProfiles(): Promise<string> {
+  return invoke<string>('stop_all_profiles');
 }
 
-export async function getTunnelStatus(): Promise<TunnelStatus> {
-  return invoke<TunnelStatus>('get_tunnel_status');
+export async function getRuntimeStatus(): Promise<TunnelStatus> {
+  return invoke<TunnelStatus>('get_runtime_status');
+}
+
+export async function validateProfile(profileId: string): Promise<ValidationResult> {
+  return invoke<ValidationResult>('validate_profile', { profileId });
+}
+
+export async function detectCloudflared(): Promise<CloudflaredInfo> {
+  return invoke<CloudflaredInfo>('detect_cloudflared');
 }
 
 // Config Commands

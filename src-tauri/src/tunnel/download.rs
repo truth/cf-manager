@@ -3,13 +3,8 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 const CLOUDFLARED_LATEST_URL: &str = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe";
-const CLOUDFLARED_VERSION_URL: &str =
-    "https://api.github.com/repos/cloudflare/cloudflared/releases/latest";
-
 #[derive(Error, Debug)]
 pub enum DownloadError {
-    #[error("Failed to fetch version info: {0}")]
-    VersionFetchError(String),
     #[error("Failed to download cloudflared: {0}")]
     DownloadError(String),
     #[error("Failed to save cloudflared: {0}")]

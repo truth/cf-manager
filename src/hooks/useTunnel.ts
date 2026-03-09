@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { getLogs, getTunnelStatus, startTunnel, stopAllTunnels, stopTunnel } from '../services/api';
-import type { LogEntry, LogFilter, TunnelStatus } from '../types';
+import { getLogs, getRuntimeStatus, startProfile, stopAllProfiles, stopProfile } from '../services/api';
+import type { LogEntry, LogFilter, ProfileType, TunnelStatus } from '../types';
 
 const MAX_LOG_ENTRIES = 500;
 
@@ -11,6 +11,9 @@ interface TunnelStatusEvent {
   name?: string;
   status: 'starting' | 'running' | 'stopping' | 'stopped' | 'error';
   tunnel_id?: string;
+  type?: ProfileType;
+  target?: string;
+  local_endpoint?: string;
 }
 
 export function useTunnelStatus() {
@@ -24,7 +27,7 @@ export function useTunnelStatus() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const nextStatus = await getTunnelStatus();
+      const nextStatus = await getRuntimeStatus();
       setStatus(nextStatus);
       setError(null);
     } catch (fetchError) {
@@ -70,10 +73,10 @@ export function useTunnelStatus() {
   }, [fetchStatus]);
 
   const start = useCallback(
-    async (tunnelId: string, name: string, token: string) => {
+    async (profileId: string, _name?: string, _token?: string) => {
       setLoading(true);
       try {
-        await startTunnel(tunnelId, name, token);
+        await startProfile(profileId);
         await fetchStatus();
       } catch (startError) {
         setError(String(startError));
@@ -86,11 +89,11 @@ export function useTunnelStatus() {
   );
 
   const startMany = useCallback(
-    async (items: Array<{ id: string; name: string; token: string }>) => {
+    async (items: Array<{ id: string }>) => {
       setLoading(true);
       try {
         for (const item of items) {
-          await startTunnel(item.id, item.name, item.token);
+          await startProfile(item.id);
         }
         await fetchStatus();
       } catch (startError) {
@@ -103,10 +106,10 @@ export function useTunnelStatus() {
     [fetchStatus],
   );
 
-  const stop = useCallback(async (tunnelId: string) => {
+  const stop = useCallback(async (profileId: string) => {
     setLoading(true);
     try {
-      await stopTunnel(tunnelId);
+      await stopProfile(profileId);
       await fetchStatus();
     } catch (stopError) {
       setError(String(stopError));
@@ -119,7 +122,7 @@ export function useTunnelStatus() {
   const stopAll = useCallback(async () => {
     setLoading(true);
     try {
-      await stopAllTunnels();
+      await stopAllProfiles();
       await fetchStatus();
     } catch (stopError) {
       setError(String(stopError));

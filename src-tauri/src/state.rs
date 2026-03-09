@@ -1,5 +1,4 @@
-use crate::commands::tunnel::TunnelConfig;
-use crate::commands::types::LogEntry;
+use crate::commands::types::{LogEntry, TunnelConfig};
 use crate::tunnel::TunnelManager;
 use std::collections::HashMap;
 use std::sync::Arc as StdArc;

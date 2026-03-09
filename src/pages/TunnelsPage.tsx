@@ -5,15 +5,25 @@ import StatusBadge from '../components/ui/StatusBadge';
 import { useTunnelStatus } from '../hooks/useTunnel';
 import { useI18n } from '../i18n/I18nProvider';
 import { deleteConfig, listTunnels, saveConfig } from '../services/api';
-import type { TunnelConfig } from '../types';
+import type { ProfileType, PublishProfile, TunnelConfig } from '../types';
 
 type DialogMode = 'create' | 'edit';
 
 interface TunnelFormState {
+  type: ProfileType;
   name: string;
   notes: string;
   tags: string;
   token: string;
+  hostname: string;
+  originUrl: string;
+  targetHostname: string;
+  localBindHost: string;
+  localBindPort: string;
+}
+
+function isPublishConfig(config: TunnelConfig): config is PublishProfile {
+  return config.type === 'publish';
 }
 
 function formatDate(value: string) {
@@ -56,10 +66,22 @@ function normalizeConfig(configs: TunnelConfig[]) {
   return [...configs].sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
 }
 
-function toFriendlyStartError(rawError: string, t: ReturnType<typeof useI18n>['t']) {
+function getConfigPreview(config: TunnelConfig) {
+  if (config.type === 'publish') {
+    return maskToken(config.token);
+  }
+
+  return `${config.local_bind_host}:${config.local_bind_port} → ${config.target_hostname}`;
+}
+
+function getTypeLabel(type: ProfileType, t: ReturnType<typeof useI18n>['t']) {
+  return type === 'publish' ? t('profile.type.publish') : t('profile.type.forward');
+}
+
+function toFriendlyStartError(rawError: string, type: ProfileType, t: ReturnType<typeof useI18n>['t']) {
   const normalized = rawError.toLowerCase();
 
-  if (normalized.includes('token') && normalized.includes('empty')) {
+  if (type === 'publish' && normalized.includes('token') && normalized.includes('empty')) {
     return t('errors.start.tokenEmpty');
   }
 
@@ -67,31 +89,67 @@ function toFriendlyStartError(rawError: string, t: ReturnType<typeof useI18n>['t
     return t('errors.start.alreadyRunning');
   }
 
-  if (
-    normalized.includes('cloudflared') &&
-    (normalized.includes('not found') || normalized.includes('unable to launch') || normalized.includes('spawn'))
-  ) {
+  if (normalized.includes('cloudflared') && (normalized.includes('not found') || normalized.includes('unable to launch'))) {
     return t('errors.start.cloudflaredMissing');
+  }
+
+  if (normalized.includes('bind') || normalized.includes('address already in use')) {
+    return t('errors.start.portInUse', { details: rawError });
+  }
+
+  if (type === 'forward' && normalized.includes('hostname')) {
+    return t('errors.start.hostnameInvalid', { details: rawError });
+  }
+
+  if (type === 'forward' && normalized.includes('access')) {
+    return t('errors.start.accessAuthRequired', { details: rawError });
   }
 
   return t('errors.start.generic', { details: rawError });
 }
 
 function configToForm(config: TunnelConfig): TunnelFormState {
+  if (isPublishConfig(config)) {
+    return {
+      type: 'publish',
+      name: config.name,
+      notes: config.notes ?? '',
+      tags: (config.tags ?? []).join(', '),
+      token: config.token,
+      hostname: config.hostname ?? '',
+      originUrl: config.origin_url ?? '',
+      targetHostname: '',
+      localBindHost: '127.0.0.1',
+      localBindPort: '3000',
+    };
+  }
+
   return {
+    type: 'forward',
     name: config.name,
     notes: config.notes ?? '',
     tags: (config.tags ?? []).join(', '),
-    token: config.token,
+    token: '',
+    hostname: '',
+    originUrl: '',
+    targetHostname: config.target_hostname,
+    localBindHost: config.local_bind_host,
+    localBindPort: String(config.local_bind_port),
   };
 }
 
 function createEmptyForm(): TunnelFormState {
   return {
+    type: 'publish',
     name: '',
     notes: '',
     tags: '',
     token: '',
+    hostname: '',
+    originUrl: '',
+    targetHostname: '',
+    localBindHost: '127.0.0.1',
+    localBindPort: '3000',
   };
 }
 
@@ -187,31 +245,64 @@ export default function TunnelsPage() {
 
   const handleSubmit = useCallback(async () => {
     const name = form.name.trim();
-    const token = form.token.trim();
-
-    if (!name || !token) {
-      setPageError(t('tunnels.alert.required'));
-      return;
-    }
-
     const notes = form.notes.trim();
     const tags = parseTags(form.tags);
     const now = new Date().toISOString();
+
+    if (!name) {
+      setPageError(t('tunnels.alert.requiredName'));
+      return;
+    }
 
     const baseConfig =
       dialogMode === 'edit' && editingId
         ? configs.find((config) => config.id === editingId)
         : undefined;
 
-    const config: TunnelConfig = {
-      id: baseConfig?.id ?? crypto.randomUUID(),
-      name,
-      token,
-      notes: notes || undefined,
-      tags: tags.length > 0 ? tags : undefined,
-      created_at: baseConfig?.created_at ?? now,
-      updated_at: now,
-    };
+    let config: TunnelConfig;
+
+    if (form.type === 'publish') {
+      const token = form.token.trim();
+      if (!token) {
+        setPageError(t('tunnels.alert.requiredPublish'));
+        return;
+      }
+
+      config = {
+        type: 'publish',
+        id: baseConfig?.id ?? crypto.randomUUID(),
+        name,
+        token,
+        hostname: form.hostname.trim() || undefined,
+        origin_url: form.originUrl.trim() || undefined,
+        notes: notes || undefined,
+        tags: tags.length > 0 ? tags : undefined,
+        created_at: baseConfig?.created_at ?? now,
+        updated_at: now,
+      };
+    } else {
+      const targetHostname = form.targetHostname.trim();
+      const localBindHost = form.localBindHost.trim();
+      const localBindPort = Number(form.localBindPort.trim());
+
+      if (!targetHostname || !localBindHost || !Number.isInteger(localBindPort) || localBindPort < 1 || localBindPort > 65535) {
+        setPageError(t('tunnels.alert.requiredForward'));
+        return;
+      }
+
+      config = {
+        type: 'forward',
+        id: baseConfig?.id ?? crypto.randomUUID(),
+        name,
+        target_hostname: targetHostname,
+        local_bind_host: localBindHost,
+        local_bind_port: localBindPort,
+        notes: notes || undefined,
+        tags: tags.length > 0 ? tags : undefined,
+        created_at: baseConfig?.created_at ?? now,
+        updated_at: now,
+      };
+    }
 
     try {
       await saveConfig(config);
@@ -226,7 +317,7 @@ export default function TunnelsPage() {
     } catch (saveError) {
       setPageError(t('tunnels.alert.saveFailed', { details: String(saveError) }));
     }
-  }, [configs, dialogMode, editingId, form.name, form.notes, form.tags, form.token, resetDialog, t]);
+  }, [configs, dialogMode, editingId, form, resetDialog, t]);
 
   const handleDelete = useCallback(
     async (id: string) => {
@@ -250,11 +341,11 @@ export default function TunnelsPage() {
     }
 
     try {
-      await start(selectedConfig.id, selectedConfig.name, selectedConfig.token);
+      await start(selectedConfig.id);
       setPageSuccess(t('tunnels.alert.started', { name: selectedConfig.name }));
       setPageError(null);
     } catch (startError) {
-      const friendly = toFriendlyStartError(String(startError), t);
+      const friendly = toFriendlyStartError(String(startError), selectedConfig.type, t);
       setPageError(t('tunnels.alert.startFailed', { details: friendly }));
     }
   }, [selectedConfig, start, t]);
@@ -281,11 +372,12 @@ export default function TunnelsPage() {
     }
 
     try {
-      await startMany(checkedConfigs.map((config) => ({ id: config.id, name: config.name, token: config.token })));
+      await startMany(checkedConfigs.map((config) => ({ id: config.id })));
       setPageSuccess(t('tunnels.alert.batchStarted', { count: checkedConfigs.length }));
       setPageError(null);
     } catch (startError) {
-      const friendly = toFriendlyStartError(String(startError), t);
+      const type = checkedConfigs[0]?.type ?? 'publish';
+      const friendly = toFriendlyStartError(String(startError), type, t);
       setPageError(t('tunnels.alert.startFailed', { details: friendly }));
     }
   }, [checkedConfigs, startMany, t]);
@@ -336,9 +428,7 @@ export default function TunnelsPage() {
 
         <div className="info-row">
           <StatusBadge tone={status.running ? 'success' : 'neutral'}>
-            {status.running
-              ? t('status.runningCount', { count: status.running_count })
-              : t('status.stopped')}
+            {status.running ? t('status.runningCount', { count: status.running_count }) : t('status.stopped')}
           </StatusBadge>
           <StatusBadge tone={selectedConfig ? 'info' : 'neutral'}>
             {selectedConfig ? t('status.selected', { name: selectedConfig.name }) : t('status.noneSelected')}
@@ -351,7 +441,7 @@ export default function TunnelsPage() {
           ) : null}
         </div>
 
-        {error ? <div className="alert alert--danger">{toFriendlyStartError(error, t)}</div> : null}
+        {error && selectedConfig ? <div className="alert alert--danger">{toFriendlyStartError(error, selectedConfig.type, t)}</div> : null}
         {pageError ? <div className="alert alert--danger">{pageError}</div> : null}
         {pageSuccess ? <div className="alert alert--success">{pageSuccess}</div> : null}
 
@@ -387,8 +477,45 @@ export default function TunnelsPage() {
             <div className="field-grid" style={{ marginTop: '14px' }}>
               <p className="text-muted">{t('tunnels.field.name')}</p>
               <p>{selectedConfig.name}</p>
-              <p className="text-muted">{t('tunnels.field.tokenPreview')}</p>
-              <p className="token-preview">{maskToken(selectedConfig.token)}</p>
+
+              <p className="text-muted">{t('tunnels.field.type')}</p>
+              <p>{getTypeLabel(selectedConfig.type, t)}</p>
+
+              {isPublishConfig(selectedConfig) ? (
+                <>
+                  <p className="text-muted">{t('tunnels.field.tokenPreview')}</p>
+                  <p className="token-preview">{maskToken(selectedConfig.token)}</p>
+                  <p className="text-muted">{t('tunnels.field.hostname')}</p>
+                  <p>{selectedConfig.hostname || t('tunnels.emptyValue')}</p>
+                  <p className="text-muted">{t('tunnels.field.originUrl')}</p>
+                  <p>{selectedConfig.origin_url || t('tunnels.emptyValue')}</p>
+                </>
+              ) : (
+                <>
+                  <p className="text-muted">{t('tunnels.field.targetHostname')}</p>
+                  <p>{selectedConfig.target_hostname}</p>
+                  <p className="text-muted">{t('tunnels.field.localBindHost')}</p>
+                  <p>{selectedConfig.local_bind_host}</p>
+                  <p className="text-muted">{t('tunnels.field.localBindPort')}</p>
+                  <p>{selectedConfig.local_bind_port}</p>
+                  <p className="text-muted">{t('tunnels.field.localAccessUrl')}</p>
+                  <p>{`http://${selectedConfig.local_bind_host}:${selectedConfig.local_bind_port}`}</p>
+                </>
+              )}
+
+              {selectedRuntime?.target ? (
+                <>
+                  <p className="text-muted">{t('tunnels.field.runtimeTarget')}</p>
+                  <p>{selectedRuntime.target}</p>
+                </>
+              ) : null}
+              {selectedRuntime?.local_endpoint ? (
+                <>
+                  <p className="text-muted">{t('tunnels.field.runtimeLocalEndpoint')}</p>
+                  <p>{selectedRuntime.local_endpoint}</p>
+                </>
+              ) : null}
+
               <p className="text-muted">{t('tunnels.field.notes')}</p>
               <p className="notes-preview">{(selectedConfig.notes ?? '').trim() || t('tunnels.noNotes')}</p>
               <p className="text-muted">{t('tunnels.field.tags')}</p>
@@ -458,7 +585,8 @@ export default function TunnelsPage() {
                         {isRunning ? t('status.running') : isSelected ? t('status.active') : t('status.saved')}
                       </StatusBadge>
                     </div>
-                    <p className="token-preview">{maskToken(config.token)}</p>
+                    <p className="text-muted">{getTypeLabel(config.type, t)}</p>
+                    <p className="token-preview">{getConfigPreview(config)}</p>
                     {summary ? <p className="notes-preview">{summary}</p> : null}
                     {(config.tags ?? []).length > 0 ? (
                       <div className="tag-list">
@@ -499,7 +627,7 @@ export default function TunnelsPage() {
       </section>
 
       <Dialog
-        description={t('tunnels.dialog.subtitle')}
+        description={t(form.type === 'publish' ? 'tunnels.dialog.publishSubtitle' : 'tunnels.dialog.forwardSubtitle')}
         footer={
           <div className="dialog-actions">
             <Button onClick={resetDialog} variant="ghost">
@@ -516,6 +644,18 @@ export default function TunnelsPage() {
       >
         <div className="field-grid">
           <div className="field-group">
+            <label htmlFor="profile-type">{t('tunnels.dialog.type')}</label>
+            <select
+              className="select"
+              id="profile-type"
+              onChange={(event) => setForm((prev) => ({ ...prev, type: event.target.value as ProfileType }))}
+              value={form.type}
+            >
+              <option value="publish">{t('profile.type.publish')}</option>
+              <option value="forward">{t('profile.type.forward')}</option>
+            </select>
+          </div>
+          <div className="field-group">
             <label htmlFor="new-tunnel-name">{t('tunnels.dialog.name')}</label>
             <input
               className="input"
@@ -526,16 +666,80 @@ export default function TunnelsPage() {
               value={form.name}
             />
           </div>
-          <div className="field-group">
-            <label htmlFor="new-tunnel-token">{t('tunnels.dialog.token')}</label>
-            <textarea
-              className="textarea"
-              id="new-tunnel-token"
-              onChange={(event) => setForm((prev) => ({ ...prev, token: event.target.value }))}
-              placeholder={t('tunnels.dialog.tokenPlaceholder')}
-              value={form.token}
-            />
-          </div>
+
+          {form.type === 'publish' ? (
+            <>
+              <div className="field-group">
+                <label htmlFor="new-tunnel-token">{t('tunnels.dialog.token')}</label>
+                <textarea
+                  className="textarea"
+                  id="new-tunnel-token"
+                  onChange={(event) => setForm((prev) => ({ ...prev, token: event.target.value }))}
+                  placeholder={t('tunnels.dialog.tokenPlaceholder')}
+                  value={form.token}
+                />
+              </div>
+              <div className="field-group">
+                <label htmlFor="publish-hostname">{t('tunnels.dialog.hostname')}</label>
+                <input
+                  className="input"
+                  id="publish-hostname"
+                  onChange={(event) => setForm((prev) => ({ ...prev, hostname: event.target.value }))}
+                  placeholder={t('tunnels.dialog.hostnamePlaceholder')}
+                  type="text"
+                  value={form.hostname}
+                />
+              </div>
+              <div className="field-group">
+                <label htmlFor="publish-origin-url">{t('tunnels.dialog.originUrl')}</label>
+                <input
+                  className="input"
+                  id="publish-origin-url"
+                  onChange={(event) => setForm((prev) => ({ ...prev, originUrl: event.target.value }))}
+                  placeholder={t('tunnels.dialog.originUrlPlaceholder')}
+                  type="text"
+                  value={form.originUrl}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="field-group">
+                <label htmlFor="forward-target-hostname">{t('tunnels.dialog.targetHostname')}</label>
+                <input
+                  className="input"
+                  id="forward-target-hostname"
+                  onChange={(event) => setForm((prev) => ({ ...prev, targetHostname: event.target.value }))}
+                  placeholder={t('tunnels.dialog.targetHostnamePlaceholder')}
+                  type="text"
+                  value={form.targetHostname}
+                />
+              </div>
+              <div className="field-group">
+                <label htmlFor="forward-local-bind-host">{t('tunnels.dialog.localBindHost')}</label>
+                <input
+                  className="input"
+                  id="forward-local-bind-host"
+                  onChange={(event) => setForm((prev) => ({ ...prev, localBindHost: event.target.value }))}
+                  placeholder={t('tunnels.dialog.localBindHostPlaceholder')}
+                  type="text"
+                  value={form.localBindHost}
+                />
+              </div>
+              <div className="field-group">
+                <label htmlFor="forward-local-bind-port">{t('tunnels.dialog.localBindPort')}</label>
+                <input
+                  className="input"
+                  id="forward-local-bind-port"
+                  onChange={(event) => setForm((prev) => ({ ...prev, localBindPort: event.target.value }))}
+                  placeholder={t('tunnels.dialog.localBindPortPlaceholder')}
+                  type="number"
+                  value={form.localBindPort}
+                />
+              </div>
+            </>
+          )}
+
           <div className="field-group">
             <label htmlFor="new-tunnel-notes">{t('tunnels.dialog.notes')}</label>
             <textarea
