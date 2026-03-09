@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:release": "powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1",
+    "clean:build-cache": "powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -SkipBuild",
     "preview": "vite preview",
     "tauri": "tauri"
   },
