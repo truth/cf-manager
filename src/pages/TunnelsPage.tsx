@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Button from '../components/ui/Button';
 import Dialog from '../components/ui/Dialog';
+import Icon from '../components/ui/Icon';
 import StatusBadge from '../components/ui/StatusBadge';
 import { useProfileStatus } from '../hooks/useTunnel';
 import { useI18n } from '../i18n/I18nProvider';
@@ -166,6 +167,8 @@ export default function TunnelsPage() {
   const [form, setForm] = useState<TunnelFormState>(createEmptyForm());
   const [pageError, setPageError] = useState<string | null>(null);
   const [pageSuccess, setPageSuccess] = useState<string | null>(null);
+  const [revealToken, setRevealToken] = useState(false);
+  const [tokenCopied, setTokenCopied] = useState(false);
 
   const loadConfigs = useCallback(async () => {
     setIsFetchingConfigs(true);
@@ -201,12 +204,27 @@ export default function TunnelsPage() {
     setCheckedTunnelIds((prev) => prev.filter((id) => configs.some((config) => config.id === id)));
   }, [configs]);
 
+  useEffect(() => {
+    setRevealToken(false);
+    setTokenCopied(false);
+  }, [selectedTunnelId]);
+
   const selectedConfig = useMemo(() => {
     if (!selectedTunnelId) {
       return null;
     }
     return configs.find((config) => config.id === selectedTunnelId) ?? null;
   }, [configs, selectedTunnelId]);
+
+  const handleCopyToken = useCallback(async (token: string) => {
+    try {
+      await navigator.clipboard.writeText(token);
+      setTokenCopied(true);
+      window.setTimeout(() => setTokenCopied(false), 1500);
+    } catch {
+      setPageError(t('tunnels.alert.copyFailed'));
+    }
+  }, [t]);
 
   const checkedConfigs = useMemo(
     () => configs.filter((config) => checkedTunnelIds.includes(config.id)),
@@ -422,6 +440,7 @@ export default function TunnelsPage() {
             <p className="panel__subtitle">{t('tunnels.subtitle')}</p>
           </div>
           <Button onClick={openCreateDialog} variant="primary">
+            <Icon name="plus" size={16} />
             {t('tunnels.new')}
           </Button>
         </div>
@@ -447,24 +466,31 @@ export default function TunnelsPage() {
 
         <div className="action-row">
           <Button disabled={loading || !selectedConfig} onClick={handleStart} variant="primary">
+            <Icon name="play" size={15} />
             {t('tunnels.startSelected')}
           </Button>
           <Button disabled={loading || !selectedConfig || !runningTunnelIds.has(selectedConfig.id)} onClick={handleStop} variant="danger">
+            <Icon name="stop" size={15} />
             {t('tunnels.stopTunnel')}
           </Button>
-          <Button disabled={loading || checkedConfigs.length === 0} onClick={handleStartChecked} variant="primary">
+          <Button disabled={loading || checkedConfigs.length === 0} onClick={handleStartChecked} variant="secondary">
+            <Icon name="play" size={15} className="btn--start" />
             {t('tunnels.startChecked')}
           </Button>
           <Button disabled={loading || checkedConfigs.every((config) => !runningTunnelIds.has(config.id))} onClick={handleStopChecked} variant="danger">
+            <Icon name="stop" size={15} />
             {t('tunnels.stopChecked')}
           </Button>
-          <Button disabled={loading || status.running_count === 0} onClick={handleStopAll} variant="ghost">
+          <Button disabled={loading || status.running_count === 0} onClick={handleStopAll} variant="secondary">
+            <Icon name="stopAll" size={15} />
             {t('tunnels.stopAll')}
           </Button>
           <Button disabled={isFetchingConfigs} onClick={() => void loadConfigs()} variant="secondary">
+            <Icon name="refresh" size={15} />
             {t('tunnels.refreshList')}
           </Button>
           <Button disabled={loading} onClick={() => void refresh()} variant="ghost">
+            <Icon name="refresh" size={15} />
             {t('tunnels.refreshStatus')}
           </Button>
         </div>
@@ -472,69 +498,117 @@ export default function TunnelsPage() {
 
       <section className="grid-two">
         <article className="panel">
-          <h3 className="panel__title">{t('tunnels.selectedSection')}</h3>
           {selectedConfig ? (
-            <div className="field-grid" style={{ marginTop: '14px' }}>
-              <p className="text-muted">{t('tunnels.field.name')}</p>
-              <p>{selectedConfig.name}</p>
-
-              <p className="text-muted">{t('tunnels.field.type')}</p>
-              <p>{getTypeLabel(selectedConfig.type, t)}</p>
-
-              {isPublishConfig(selectedConfig) ? (
-                <>
-                  <p className="text-muted">{t('tunnels.field.tokenPreview')}</p>
-                  <p className="token-preview">{maskToken(selectedConfig.token)}</p>
-                  <p className="text-muted">{t('tunnels.field.hostname')}</p>
-                  <p>{selectedConfig.hostname || t('tunnels.emptyValue')}</p>
-                  <p className="text-muted">{t('tunnels.field.originUrl')}</p>
-                  <p>{selectedConfig.origin_url || t('tunnels.emptyValue')}</p>
-                </>
-              ) : (
-                <>
-                  <p className="text-muted">{t('tunnels.field.targetHostname')}</p>
-                  <p>{selectedConfig.target_hostname}</p>
-                  <p className="text-muted">{t('tunnels.field.localBindHost')}</p>
-                  <p>{selectedConfig.local_bind_host}</p>
-                  <p className="text-muted">{t('tunnels.field.localBindPort')}</p>
-                  <p>{selectedConfig.local_bind_port}</p>
-                  <p className="text-muted">{t('tunnels.field.localAccessUrl')}</p>
-                  <p>{`http://${selectedConfig.local_bind_host}:${selectedConfig.local_bind_port}`}</p>
-                </>
-              )}
-
-              {selectedRuntime?.target ? (
-                <>
-                  <p className="text-muted">{t('tunnels.field.runtimeTarget')}</p>
-                  <p>{selectedRuntime.target}</p>
-                </>
-              ) : null}
-              {selectedRuntime?.local_endpoint ? (
-                <>
-                  <p className="text-muted">{t('tunnels.field.runtimeLocalEndpoint')}</p>
-                  <p>{selectedRuntime.local_endpoint}</p>
-                </>
-              ) : null}
-
-              <p className="text-muted">{t('tunnels.field.notes')}</p>
-              <p className="notes-preview">{(selectedConfig.notes ?? '').trim() || t('tunnels.noNotes')}</p>
-              <p className="text-muted">{t('tunnels.field.tags')}</p>
-              <div className="tag-list">
-                {(selectedConfig.tags ?? []).length > 0 ? (
-                  (selectedConfig.tags ?? []).map((tag) => (
-                    <span className="tag-chip" key={tag}>
-                      #{tag}
-                    </span>
-                  ))
-                ) : (
-                  <span className="text-muted">{t('tunnels.noTags')}</span>
-                )}
+            <>
+              <div className="panel__head">
+                <div>
+                  <h3 className="panel__title">{selectedConfig.name}</h3>
+                  <p className="panel__subtitle">{getTypeLabel(selectedConfig.type, t)}</p>
+                </div>
+                <StatusBadge tone={runningTunnelIds.has(selectedConfig.id) ? 'success' : 'neutral'}>
+                  {runningTunnelIds.has(selectedConfig.id) ? t('status.running') : t('status.stopped')}
+                </StatusBadge>
               </div>
-              <p className="text-muted">{t('tunnels.field.updated')}</p>
-              <p>{formatDate(selectedConfig.updated_at)}</p>
-            </div>
+
+              <div className="detail-list">
+                {isPublishConfig(selectedConfig) ? (
+                  <>
+                    <div className="detail-item">
+                      <p className="detail-item__label">{t('tunnels.field.tokenPreview')}</p>
+                      <div className="detail-field">
+                        <span className="detail-field__text token-preview">
+                          {revealToken ? selectedConfig.token : maskToken(selectedConfig.token)}
+                        </span>
+                        <Button
+                          variant="icon"
+                          aria-label={revealToken ? t('common.hide') : t('common.reveal')}
+                          title={revealToken ? t('common.hide') : t('common.reveal')}
+                          onClick={() => setRevealToken((prev) => !prev)}
+                        >
+                          <Icon name={revealToken ? 'eyeOff' : 'eye'} size={16} />
+                        </Button>
+                        <Button
+                          variant="icon"
+                          aria-label={tokenCopied ? t('common.copied') : t('common.copy')}
+                          title={tokenCopied ? t('common.copied') : t('common.copy')}
+                          onClick={() => void handleCopyToken(selectedConfig.token)}
+                        >
+                          <Icon name={tokenCopied ? 'check' : 'copy'} size={16} />
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="detail-item">
+                      <p className="detail-item__label">{t('tunnels.field.hostname')}</p>
+                      <p className="detail-item__value">{selectedConfig.hostname || t('tunnels.emptyValue')}</p>
+                    </div>
+                    <div className="detail-item">
+                      <p className="detail-item__label">{t('tunnels.field.originUrl')}</p>
+                      <p className="detail-item__value">{selectedConfig.origin_url || t('tunnels.emptyValue')}</p>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="detail-item">
+                      <p className="detail-item__label">{t('tunnels.field.targetHostname')}</p>
+                      <p className="detail-item__value">{selectedConfig.target_hostname}</p>
+                    </div>
+                    <div className="detail-item">
+                      <p className="detail-item__label">{t('tunnels.field.localBindHost')}</p>
+                      <p className="detail-item__value">{selectedConfig.local_bind_host}</p>
+                    </div>
+                    <div className="detail-item">
+                      <p className="detail-item__label">{t('tunnels.field.localBindPort')}</p>
+                      <p className="detail-item__value">{selectedConfig.local_bind_port}</p>
+                    </div>
+                    <div className="detail-item">
+                      <p className="detail-item__label">{t('tunnels.field.localAccessUrl')}</p>
+                      <p className="detail-item__value">{`http://${selectedConfig.local_bind_host}:${selectedConfig.local_bind_port}`}</p>
+                    </div>
+                  </>
+                )}
+
+                {selectedRuntime?.target ? (
+                  <div className="detail-item">
+                    <p className="detail-item__label">{t('tunnels.field.runtimeTarget')}</p>
+                    <p className="detail-item__value">{selectedRuntime.target}</p>
+                  </div>
+                ) : null}
+                {selectedRuntime?.local_endpoint ? (
+                  <div className="detail-item">
+                    <p className="detail-item__label">{t('tunnels.field.runtimeLocalEndpoint')}</p>
+                    <p className="detail-item__value">{selectedRuntime.local_endpoint}</p>
+                  </div>
+                ) : null}
+
+                <div className="detail-item">
+                  <p className="detail-item__label">{t('tunnels.field.notes')}</p>
+                  <p className="notes-preview">{(selectedConfig.notes ?? '').trim() || t('tunnels.noNotes')}</p>
+                </div>
+                <div className="detail-item">
+                  <p className="detail-item__label">{t('tunnels.field.tags')}</p>
+                  <div className="tag-list">
+                    {(selectedConfig.tags ?? []).length > 0 ? (
+                      (selectedConfig.tags ?? []).map((tag) => (
+                        <span className="tag-chip" key={tag}>
+                          #{tag}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-muted">{t('tunnels.noTags')}</span>
+                    )}
+                  </div>
+                </div>
+                <div className="detail-item">
+                  <p className="detail-item__label">{t('tunnels.field.updated')}</p>
+                  <p className="detail-item__value">{formatDate(selectedConfig.updated_at)}</p>
+                </div>
+              </div>
+            </>
           ) : (
-            <p className="empty-state">{t('tunnels.emptySelected')}</p>
+            <>
+              <h3 className="panel__title">{t('tunnels.selectedSection')}</h3>
+              <p className="empty-state">{t('tunnels.emptySelected')}</p>
+            </>
           )}
         </article>
 
@@ -564,6 +638,7 @@ export default function TunnelsPage() {
                   >
                     <div className="tunnel-card__top">
                       <input
+                        className="tunnel-card__checkbox"
                         checked={isChecked}
                         onChange={(event) => {
                           event.stopPropagation();
@@ -581,9 +656,10 @@ export default function TunnelsPage() {
                         type="checkbox"
                       />
                       <h4 className="tunnel-card__title">{config.name}</h4>
-                      <StatusBadge tone={isRunning ? 'success' : isSelected ? 'info' : 'neutral'}>
-                        {isRunning ? t('status.running') : isSelected ? t('status.active') : t('status.saved')}
-                      </StatusBadge>
+                      <span
+                        className={`status-dot ${isRunning ? 'status-dot--running' : 'status-dot--idle'}`}
+                        title={isRunning ? t('status.running') : t('status.saved')}
+                      />
                     </div>
                     <p className="text-muted">{getTypeLabel(config.type, t)}</p>
                     <p className="token-preview">{getConfigPreview(config)}</p>
@@ -597,26 +673,33 @@ export default function TunnelsPage() {
                         ))}
                       </div>
                     ) : null}
-                    <p className="tunnel-card__meta">{t('tunnels.field.created', { time: formatDate(config.created_at) })}</p>
-                    <div className="row-actions">
-                      <Button
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          openEditDialog(config);
-                        }}
-                        variant="ghost"
-                      >
-                        {t('common.edit')}
-                      </Button>
-                      <Button
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void handleDelete(config.id);
-                        }}
-                        variant="ghost"
-                      >
-                        {t('common.delete')}
-                      </Button>
+                    <div className="tunnel-card__foot">
+                      <p className="tunnel-card__meta">{t('tunnels.field.created', { time: formatDate(config.created_at) })}</p>
+                      <div className="row-actions">
+                        <Button
+                          variant="icon"
+                          aria-label={t('common.edit')}
+                          title={t('common.edit')}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openEditDialog(config);
+                          }}
+                        >
+                          <Icon name="edit" size={16} />
+                        </Button>
+                        <Button
+                          variant="icon"
+                          className="btn--danger"
+                          aria-label={t('common.delete')}
+                          title={t('common.delete')}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void handleDelete(config.id);
+                          }}
+                        >
+                          <Icon name="trash" size={16} />
+                        </Button>
+                      </div>
                     </div>
                   </button>
                 );

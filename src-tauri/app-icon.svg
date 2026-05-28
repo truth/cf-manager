@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="120" y1="80" x2="920" y2="980" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="0.55" stop-color="#2f6bff"/>
+      <stop offset="1" stop-color="#1d4ed8"/>
+    </linearGradient>
+    <radialGradient id="topGlow" cx="0.3" cy="0.26" r="0.85">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.20"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="coreGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.65"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Rounded-square base (transparent corners) -->
+  <rect x="0" y="0" width="1024" height="1024" rx="232" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1024" height="1024" rx="232" fill="url(#topGlow)"/>
+
+  <!-- Tunnel receding toward a light at the end: rings step up-right into depth -->
+  <g fill="none" stroke="#ffffff" stroke-linecap="round">
+    <circle cx="466" cy="566" r="306" stroke-width="76" opacity="0.22"/>
+    <circle cx="500" cy="528" r="216" stroke-width="66" opacity="0.38"/>
+    <circle cx="534" cy="492" r="140" stroke-width="56" opacity="0.58"/>
+    <circle cx="566" cy="458" r="80"  stroke-width="46" opacity="0.82"/>
+  </g>
+
+  <!-- Light at the end of the tunnel -->
+  <circle cx="592" cy="432" r="128" fill="url(#coreGlow)"/>
+  <circle cx="592" cy="432" r="50" fill="#ffffff"/>
+</svg>

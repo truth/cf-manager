@@ -1,31 +1,17 @@
 import type { ChangeEvent } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Button from '../components/ui/Button';
+import Icon from '../components/ui/Icon';
 import StatusBadge from '../components/ui/StatusBadge';
 import { useTunnelLogs } from '../hooks/useTunnel';
 import { useI18n } from '../i18n/I18nProvider';
 import { clearLogsApi } from '../services/api';
-import type { LogEntry, LogFilter } from '../types';
+import type { LogFilter } from '../types';
 
 const LOG_FILTER_OPTIONS: LogFilter[] = ['all', 'debug', 'info', 'warn', 'error'];
 
 function isLogFilter(value: string): value is LogFilter {
   return LOG_FILTER_OPTIONS.includes(value as LogFilter);
-}
-
-function toneByLevel(level: LogEntry['level']) {
-  switch (level) {
-    case 'error':
-      return 'danger';
-    case 'warn':
-      return 'warning';
-    case 'info':
-      return 'info';
-    case 'debug':
-      return 'neutral';
-    default:
-      return 'neutral';
-  }
 }
 
 export default function LogsPage() {
@@ -101,6 +87,7 @@ export default function LogsPage() {
           </select>
 
           <Button onClick={() => void handleClear()} variant="secondary">
+            <Icon name="trash" size={15} />
             {t('logs.clear')}
           </Button>
         </div>
@@ -126,7 +113,7 @@ export default function LogsPage() {
               {visibleLogs.map((log) => (
                 <article className="log-row" key={log.id}>
                   <time className="log-row__time">{new Date(log.timestamp).toLocaleTimeString()}</time>
-                  <StatusBadge tone={toneByLevel(log.level)}>{log.level.toUpperCase()}</StatusBadge>
+                  <span className={`log-row__level log-row__level--${log.level}`}>{log.level.toUpperCase()}</span>
                   <p className="log-row__message">[{log.source}] {log.message}</p>
                 </article>
               ))}

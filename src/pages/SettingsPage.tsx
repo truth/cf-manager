@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import Button from '../components/ui/Button';
 import StatusBadge from '../components/ui/StatusBadge';
 import { useI18n } from '../i18n/I18nProvider';
+import { useTheme } from '../theme/ThemeProvider';
 import { detectCloudflared } from '../services/api';
 import type { Locale } from '../i18n/messages';
 import type { AppSettings, CloudflaredInfo } from '../types';
@@ -12,10 +13,11 @@ const LOCALES: Locale[] = ['en-US', 'zh-CN'];
 
 export default function SettingsPage() {
   const { locale, setLocale, t } = useI18n();
+  const { theme, setTheme } = useTheme();
   const [settings, setSettings] = useState<AppSettings>({
     autoStart: false,
     minimizeToTray: true,
-    theme: 'dark',
+    theme: 'light',
     logRetentionDays: 7,
   });
   const [savedAt, setSavedAt] = useState<string | null>(null);
@@ -143,16 +145,16 @@ export default function SettingsPage() {
           <p className="setting-card__description">{t('settings.appearance.subtitle')}</p>
 
           <div className="inline-options">
-            {THEMES.map((theme) => (
-              <label className="toggle-row" key={theme}>
+            {THEMES.map((option) => (
+              <label className="toggle-row" key={option}>
                 <input
-                  checked={settings.theme === theme}
+                  checked={theme === option}
                   name="theme"
-                  onChange={() => setSettings((prev) => ({ ...prev, theme }))}
+                  onChange={() => setTheme(option)}
                   type="radio"
-                  value={theme}
+                  value={option}
                 />
-                {t(`settings.theme.${theme}`)}
+                {t(`settings.theme.${option}`)}
               </label>
             ))}
           </div>

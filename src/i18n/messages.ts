@@ -11,7 +11,9 @@ export const messages = {
     'app.nav.logs.hint': 'Live stream and filtering',
     'app.nav.settings.label': 'Settings',
     'app.nav.settings.hint': 'Client preferences',
-    'app.footer': 'Cloudflare Tunnel Manager v1.1.1 - {time}',
+    'app.footer': 'Cloudflare Tunnel Manager v1.2.0 - {time}',
+    'app.theme.switchToLight': 'Switch to light theme',
+    'app.theme.switchToDark': 'Switch to dark theme',
 
     'common.close': 'Close',
     'common.cancel': 'Cancel',
@@ -21,6 +23,10 @@ export const messages = {
     'common.save': 'Save',
     'common.start': 'Start',
     'common.stop': 'Stop',
+    'common.copy': 'Copy',
+    'common.copied': 'Copied',
+    'common.reveal': 'Show',
+    'common.hide': 'Hide',
 
     'status.running': 'Running',
     'status.runningCount': '{count} running',
@@ -126,6 +132,7 @@ export const messages = {
     'tunnels.alert.batchStarted': 'Started {count} profile(s).',
     'tunnels.alert.batchStopped': 'Stopped {count} profile(s).',
     'tunnels.alert.noneRunningSelected': 'No running profile in your selection.',
+    'tunnels.alert.copyFailed': 'Failed to copy to clipboard.',
 
     'logs.title': 'Live Logs',
     'logs.subtitle': 'Realtime output from cloudflared and local app events.',
@@ -181,7 +188,9 @@ export const messages = {
     'app.nav.logs.hint': '实时流与过滤',
     'app.nav.settings.label': '设置',
     'app.nav.settings.hint': '客户端偏好',
-    'app.footer': 'Cloudflare Tunnel Manager v1.1.1 - {time}',
+    'app.footer': 'Cloudflare Tunnel Manager v1.2.0 - {time}',
+    'app.theme.switchToLight': '切换到浅色主题',
+    'app.theme.switchToDark': '切换到深色主题',
 
     'common.close': '关闭',
     'common.cancel': '取消',
@@ -191,6 +200,10 @@ export const messages = {
     'common.save': '保存',
     'common.start': '启动',
     'common.stop': '停止',
+    'common.copy': '复制',
+    'common.copied': '已复制',
+    'common.reveal': '显示',
+    'common.hide': '隐藏',
 
     'status.running': '运行中',
     'status.runningCount': '运行中 {count} 个',
@@ -295,6 +308,7 @@ export const messages = {
     'tunnels.alert.batchStarted': '已启动 {count} 个配置。',
     'tunnels.alert.batchStopped': '已停止 {count} 个配置。',
     'tunnels.alert.noneRunningSelected': '你勾选的配置里没有正在运行的。',
+    'tunnels.alert.copyFailed': '复制到剪贴板失败。',
 
     'logs.title': '实时日志',
     'logs.subtitle': '展示 cloudflared 与应用本地事件的实时输出。',
