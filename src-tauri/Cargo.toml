@@ -27,6 +27,11 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 reqwest = { version = "0.12", features = ["blocking"] }
 
+# 仅 macOS 需要：cloudflared 官方分发为 .tgz，需解压取出可执行文件
+[target.'cfg(target_os = "macos")'.dependencies]
+flate2 = "1"
+tar = "0.4"
+
 [profile.release]
 strip = true
 lto = true
