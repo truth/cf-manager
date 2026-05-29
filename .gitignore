@@ -24,3 +24,7 @@ release
 *.njsproj
 *.sln
 *.sw?
+
+# cloudflared 二进制：运行时从 PATH 解析或自动下载，不纳入版本库
+/src-tauri/binaries/cloudflared
+/src-tauri/binaries/cloudflared.exe
